@@ -1,0 +1,6 @@
+{
+  "name": "FixMechanic Mechanic",
+  "description": "Native Android app for roadside mechanics to receive, review, accept, navigate, and fulfill emergency roadside assistance requests through FixMechanic.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
