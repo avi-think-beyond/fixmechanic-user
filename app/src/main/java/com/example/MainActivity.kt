@@ -28,8 +28,17 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
 
-    val repository = FixMechanicRepositoryImpl(lifecycleScope)
+    val repository = FixMechanicRepositoryImpl(this, lifecycleScope)
     val viewModel = MechanicViewModel(repository)
+
+    val credentialManager = androidx.credentials.CredentialManager.create(this)
+    com.example.ui.auth.attemptAutoSignIn(
+      context = this,
+      credentialManager = credentialManager,
+      onAuthSuccess = { },
+      onUnauthenticated = { },
+      scope = lifecycleScope
+    )
 
     setContent {
       FixMechanicTheme {

@@ -356,7 +356,28 @@ fun MechanicLoginScreen(
       shape = RoundedCornerShape(10.dp)
     )
 
-    Spacer(modifier = Modifier.height(20.dp))
+    com.example.ui.auth.GoogleSignInButton(
+      onAuthSuccess = {
+        onFastDemoLogin("rajesh")
+      },
+      onAuthError = { }
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      HorizontalDivider(modifier = Modifier.weight(1f), color = BorderLight)
+      Text(
+        text = "  OR INDIAN MOBILE OTP  ",
+        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Bold)
+      )
+      HorizontalDivider(modifier = Modifier.weight(1f), color = BorderLight)
+    }
+
+    Spacer(modifier = Modifier.height(16.dp))
 
     Button(
       onClick = {

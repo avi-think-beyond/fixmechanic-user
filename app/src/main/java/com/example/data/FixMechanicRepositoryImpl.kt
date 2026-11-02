@@ -6,36 +6,53 @@ import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.Uri
 import androidx.core.content.ContextCompat
+import com.example.R
 import com.example.model.*
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.*
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 class FixMechanicRepositoryImpl(
+  private val db: FirebaseFirestore?,
+  private val auth: FirebaseAuth?,
   private val scope: CoroutineScope
 ) : AuthRepository, MechanicProfileRepository, JobDispatchRepository, ChatRepository, LocationNavigationService, FcmNotificationService {
 
+  // Pure unit test constructor without Firebase
+  constructor(scope: CoroutineScope) : this(null, null, scope)
+
+  // Primary production constructor passing firestore_database_id
+  constructor(context: Context, scope: CoroutineScope) : this(
+    FirebaseFirestore.getInstance(context.getString(R.string.firestore_database_id)),
+    FirebaseAuth.getInstance(),
+    scope
+  )
+
+  // Direct fail-fast accessor for authenticated user's UID
+  private fun requireUserId(): String {
+    return auth?.currentUser?.uid
+      ?: throw IllegalStateException("Mechanic must be authenticated before performing this operation.")
+  }
+
   // --- Auth State ---
-  private val _currentUserMobile = MutableStateFlow<String?>("+91 98765 43210")
+  private val _currentUserMobile = MutableStateFlow<String?>(auth?.currentUser?.phoneNumber ?: auth?.currentUser?.email ?: "+91 98765 43210")
   override val currentUserMobile: StateFlow<String?> = _currentUserMobile.asStateFlow()
 
-  private val _isAuthenticated = MutableStateFlow(true)
+  private val _isAuthenticated = MutableStateFlow(auth?.currentUser != null)
   override val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
 
-  // --- Synthetic Profiles ---
-  private val approvedRajeshProfile = MechanicProfile(
-    id = "mech_rajesh_kumar",
-    fullName = "Rajesh Kumar",
-    mobileNumber = "+91 98765 43210",
-    email = "rajesh.auto@fixmechanic.in",
+  // Default initial profile
+  private val defaultProfile = MechanicProfile(
+    id = auth?.currentUser?.uid ?: "mech_rajesh_kumar",
+    fullName = auth?.currentUser?.displayName ?: "Rajesh Kumar",
+    mobileNumber = auth?.currentUser?.phoneNumber ?: "+91 98765 43210",
+    email = auth?.currentUser?.email ?: "rajesh.auto@fixmechanic.in",
     workshopName = "Sri Balaji 24/7 Mobile Auto Tech",
     vehicleCapability = VehicleCapability.BOTH,
     supportedServices = setOf(
@@ -54,66 +71,15 @@ class FixMechanicRepositoryImpl(
     registrationStatus = RegistrationStatus.APPROVED,
     statusReason = "Aadhaar & Commercial Trade Certificate verified. Active roadside dispatch clearance.",
     isOnline = true,
-    isDemoMode = true,
+    isDemoMode = false,
     rating = 4.94f,
     totalCompletedJobs = 184,
     todayEarningsInr = 2450.0,
     activeResponseRatePercent = 99
   )
 
-  private val pendingAmitProfile = MechanicProfile(
-    id = "mech_amit_sharma",
-    fullName = "Amit Sharma",
-    mobileNumber = "+91 98450 11223",
-    email = "amit.sharma@speedway.in",
-    workshopName = "Speedway Roadside Services",
-    vehicleCapability = VehicleCapability.BIKE,
-    supportedServices = setOf(
-      ServiceCategory.PUNCTURE_TYRE,
-      ServiceCategory.CLUTCH_BRAKE_CABLE,
-      ServiceCategory.FUEL_DELIVERY
-    ),
-    serviceRadiusKm = 10,
-    baseCityLocality = "Koramangala 4th Block, Bengaluru",
-    experienceYears = 4,
-    verificationIdNumber = "DL-KA01-2021-44019",
-    registrationStatus = RegistrationStatus.PENDING,
-    statusReason = "Aadhaar & Workshop Trade Proof submitted. Verification in progress by FixMechanic operations team.",
-    isOnline = false,
-    isDemoMode = true,
-    rating = 4.80f,
-    totalCompletedJobs = 12,
-    todayEarningsInr = 0.0,
-    activeResponseRatePercent = 94
-  )
-
-  private val suspendedSureshProfile = MechanicProfile(
-    id = "mech_suresh_patil",
-    fullName = "Suresh Patil",
-    mobileNumber = "+91 91234 56789",
-    email = "suresh.patil@garage.in",
-    workshopName = "Patil Auto Garage",
-    vehicleCapability = VehicleCapability.CAR,
-    supportedServices = setOf(
-      ServiceCategory.BATTERY_JUMPSTART,
-      ServiceCategory.OVERHEATING_COOLANT
-    ),
-    serviceRadiusKm = 12,
-    baseCityLocality = "Whitefield Main Road, Bengaluru",
-    experienceYears = 7,
-    verificationIdNumber = "DL-KA53-2017-77182",
-    registrationStatus = RegistrationStatus.SUSPENDED,
-    statusReason = "Account temporarily suspended due to repeated customer cancellation policy audit.",
-    isOnline = false,
-    isDemoMode = true,
-    rating = 4.20f,
-    totalCompletedJobs = 64,
-    todayEarningsInr = 0.0,
-    activeResponseRatePercent = 75
-  )
-
   // --- Profile State ---
-  private val _profile = MutableStateFlow(approvedRajeshProfile)
+  private val _profile = MutableStateFlow(defaultProfile)
   override val profile: StateFlow<MechanicProfile> = _profile.asStateFlow()
 
   private val _isSimulateCompetitorSteal = MutableStateFlow(false)
@@ -152,35 +118,229 @@ class FixMechanicRepositoryImpl(
         payoutInr = 650.00,
         rating = 5.0f,
         review = "Car started in 2 minutes. Alternator charging was checked with multimeter. Very polite."
-      ),
-      CompletedJobRecord(
-        id = "job_hist_in_3",
-        requestCode = "FIX-8115",
-        completedAtDate = "Yesterday, 06:40 PM",
-        vehicleInfo = "Honda Activa 6G",
-        serviceType = "Clutch & Accelerator Cable Snapped",
-        locality = "Koramangala Sony World Junction",
-        payoutInr = 400.00,
-        rating = 4.9f,
-        review = "Replaced broken accelerator wire on the spot. Great emergency support!"
       )
     )
   )
   override val completedHistory: StateFlow<List<CompletedJobRecord>> = _completedHistory.asStateFlow()
 
-  // --- Chat State ---
+  // In-memory fallback chat map
   private val _messages = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
 
   private var countdownJob: Job? = null
+  private var offersListenerRegistration: ListenerRegistration? = null
+  private var activeJobListenerRegistration: ListenerRegistration? = null
+  private var profileListenerRegistration: ListenerRegistration? = null
 
   init {
-    // Automatically trigger initial simulated incoming offer for the approved mechanic
-    scope.launch {
-      delay(1500)
-      if (_profile.value.isOnline && _profile.value.registrationStatus == RegistrationStatus.APPROVED && _activeJob.value == null) {
-        triggerSimulatedOffer(0)
+    // Monitor Auth state changes
+    auth?.addAuthStateListener { firebaseAuth ->
+      val user = firebaseAuth.currentUser
+      _isAuthenticated.value = user != null
+      if (user != null) {
+        _currentUserMobile.value = user.phoneNumber ?: user.email
+        attachProfileListener(user.uid)
+      } else {
+        detachAllListeners()
       }
     }
+
+    if (auth?.currentUser != null) {
+      attachProfileListener(auth.currentUser!!.uid)
+    } else {
+      // In demo mode without login, trigger synthetic sample offer
+      scope.launch {
+        delay(1500)
+        if (_profile.value.isOnline && _profile.value.registrationStatus == RegistrationStatus.APPROVED && _activeJob.value == null) {
+          triggerSimulatedOffer(0)
+        }
+      }
+    }
+  }
+
+  private fun detachAllListeners() {
+    profileListenerRegistration?.remove()
+    profileListenerRegistration = null
+    offersListenerRegistration?.remove()
+    offersListenerRegistration = null
+    activeJobListenerRegistration?.remove()
+    activeJobListenerRegistration = null
+  }
+
+  private fun attachProfileListener(uid: String) {
+    val firestore = db ?: return
+    profileListenerRegistration?.remove()
+    val docRef = firestore.collection("mechanics").document(uid)
+    profileListenerRegistration = docRef.addSnapshotListener { snapshot, error ->
+      if (error != null) {
+        handleFirestoreError(error, OperationType.GET, docRef.path)
+        return@addSnapshotListener
+      }
+      if (snapshot != null && snapshot.exists()) {
+        val fullName = snapshot.getString("fullName") ?: _profile.value.fullName
+        val mobile = snapshot.getString("mobileNumber") ?: _profile.value.mobileNumber
+        val isOnline = snapshot.getBoolean("isOnline") ?: _profile.value.isOnline
+        val statusStr = snapshot.getString("registrationStatus") ?: "APPROVED"
+        val regStatus = try { RegistrationStatus.valueOf(statusStr) } catch (_: Exception) { RegistrationStatus.APPROVED }
+        val activeJobId = snapshot.getString("activeJobId")
+
+        _profile.update {
+          it.copy(
+            id = uid,
+            fullName = fullName,
+            mobileNumber = mobile,
+            isOnline = isOnline,
+            registrationStatus = regStatus,
+            activeJobId = activeJobId,
+            isDemoMode = false
+          )
+        }
+
+        // Attach or sync active job
+        if (!activeJobId.isNullOrBlank()) {
+          attachActiveJobListener(activeJobId)
+        } else {
+          _activeJob.value = null
+          activeJobListenerRegistration?.remove()
+          activeJobListenerRegistration = null
+          if (isOnline && regStatus == RegistrationStatus.APPROVED) {
+            attachOffersListener()
+          }
+        }
+      } else {
+        // Document doesn't exist yet: initialize state as pending registration
+        _profile.value = defaultProfile.copy(
+          fullName = auth?.currentUser?.displayName ?: "FixMechanic Partner",
+          email = auth?.currentUser?.email ?: "",
+          mobileNumber = auth?.currentUser?.phoneNumber ?: "",
+          registrationStatus = RegistrationStatus.PENDING,
+          isOnline = false
+        )
+      }
+    }
+  }
+
+  private fun attachOffersListener() {
+    val firestore = db ?: return
+    if (offersListenerRegistration != null) return
+    val query = firestore.collection("emergency_requests").whereEqualTo("status", "PENDING_DISPATCH")
+    offersListenerRegistration = query.addSnapshotListener { snapshot, error ->
+      if (error != null) {
+        handleFirestoreError(error, OperationType.LIST, "emergency_requests")
+        return@addSnapshotListener
+      }
+      if (snapshot != null && !snapshot.isEmpty && _activeJob.value == null) {
+        val doc = snapshot.documents.first()
+        val offer = mapDocToJobOffer(doc)
+        _currentOffer.value = offer
+      } else if (snapshot != null && snapshot.isEmpty) {
+        // If current offer was from live Firestore and is no longer pending, clear it
+        if (_currentOffer.value != null && !_currentOffer.value!!.id.startsWith("off_in_")) {
+          _currentOffer.value = null
+        }
+      }
+    }
+  }
+
+  private fun attachActiveJobListener(jobId: String) {
+    val firestore = db ?: return
+    activeJobListenerRegistration?.remove()
+    val docRef = firestore.collection("emergency_requests").document(jobId)
+    activeJobListenerRegistration = docRef.addSnapshotListener { snapshot, error ->
+      if (error != null) {
+        handleFirestoreError(error, OperationType.GET, docRef.path)
+        return@addSnapshotListener
+      }
+      if (snapshot != null && snapshot.exists()) {
+        val job = mapDocToActiveJob(snapshot)
+        _activeJob.value = job
+        if (job.status == JobStatus.COMPLETED || job.status == JobStatus.CANCELLED) {
+          _activeJob.value = null
+        }
+      }
+    }
+  }
+
+  private fun mapDocToJobOffer(doc: DocumentSnapshot): JobOffer {
+    val id = doc.id
+    val reqCode = "FIX-${id.takeLast(4).uppercase()}"
+    val vTypeStr = doc.getString("vehicleType") ?: "FOUR_WHEELER"
+    val vType = try { VehicleType.valueOf(vTypeStr) } catch (_: Exception) { VehicleType.FOUR_WHEELER }
+    val vModel = doc.getString("vehicleModel") ?: "Passenger Vehicle"
+    val probCatStr = doc.getString("problemCategory") ?: "PUNCTURE_TYRE"
+    val probCat = try { ServiceCategory.valueOf(probCatStr) } catch (_: Exception) { ServiceCategory.PUNCTURE_TYRE }
+    val desc = doc.getString("problemDescription") ?: "Roadside emergency breakdown reported"
+    val notes = doc.getString("customerNotes") ?: "Parked safely on road shoulder"
+    val dist = (doc.get("approxDistanceKm") as? Number)?.toDouble() ?: 2.5
+    val loc = doc.getString("locality") ?: "Nearby Roadway"
+    val payout = (doc.get("estimatedPayoutInr") as? Number)?.toDouble() ?: 550.0
+
+    return JobOffer(
+      id = id,
+      requestCode = reqCode,
+      vehicleType = vType,
+      vehicleModel = vModel,
+      problemCategory = probCat,
+      problemDescription = desc,
+      customerNotes = notes,
+      approxDistanceKm = dist,
+      locality = loc,
+      safetyNotes = "Traffic corridor active. Maintain safe perimeter.",
+      estimatedPayoutMinInr = payout * 0.9,
+      estimatedPayoutMaxInr = payout * 1.2,
+      totalCountdownSeconds = 30,
+      remainingCountdownSeconds = 30
+    )
+  }
+
+  private fun mapDocToActiveJob(doc: DocumentSnapshot): ActiveJob {
+    val id = doc.id
+    val reqCode = "FIX-${id.takeLast(4).uppercase()}"
+    val statusStr = doc.getString("status") ?: "ACCEPTED"
+    val status = try { JobStatus.valueOf(statusStr) } catch (_: Exception) { JobStatus.ACCEPTED }
+    val vTypeStr = doc.getString("vehicleType") ?: "FOUR_WHEELER"
+    val vType = try { VehicleType.valueOf(vTypeStr) } catch (_: Exception) { VehicleType.FOUR_WHEELER }
+    val vModel = doc.getString("vehicleModel") ?: "Passenger Vehicle"
+    val probCatStr = doc.getString("problemCategory") ?: "PUNCTURE_TYRE"
+    val probCat = try { ServiceCategory.valueOf(probCatStr) } catch (_: Exception) { ServiceCategory.PUNCTURE_TYRE }
+    val desc = doc.getString("problemDescription") ?: "Roadside breakdown assistance"
+    val notes = doc.getString("customerNotes") ?: "Standing by vehicle"
+    val dist = (doc.get("approxDistanceKm") as? Number)?.toDouble() ?: 2.5
+    val loc = doc.getString("locality") ?: "Bengaluru City Road"
+    val exactAddr = doc.getString("exactAddress") ?: "Main corridor, Roadside site"
+    val custName = doc.getString("customerDisplayName") ?: "Customer"
+    val safety = doc.getString("customerSafetyStatus") ?: "Safe area"
+    val lat = (doc.get("destinationLat") as? Number)?.toDouble() ?: 12.9562
+    val lng = (doc.get("destinationLng") as? Number)?.toDouble() ?: 77.7019
+    val payout = (doc.get("estimatedPayoutInr") as? Number)?.toDouble() ?: 550.0
+
+    val eta = when (status) {
+      JobStatus.ACCEPTED -> 14
+      JobStatus.EN_ROUTE -> 8
+      else -> 0
+    }
+
+    return ActiveJob(
+      id = id,
+      requestCode = reqCode,
+      status = status,
+      vehicleType = vType,
+      vehicleModel = vModel,
+      problemCategory = probCat,
+      problemDescription = desc,
+      customerNotes = notes,
+      approxDistanceKm = dist,
+      locality = loc,
+      exactAddress = exactAddr,
+      customerDisplayName = custName,
+      customerSafetyStatus = safety,
+      destinationLat = lat,
+      destinationLng = lng,
+      currentEtaMinutes = eta,
+      estimatedPayoutInr = payout,
+      createdAtEpochMs = System.currentTimeMillis() - 60000L,
+      assignedAtEpochMs = System.currentTimeMillis(),
+      statusHistory = listOf(StatusTimestamp(status, System.currentTimeMillis(), "Status: ${status.label}"))
+    )
   }
 
   // --- Auth Repository Implementation ---
@@ -216,8 +376,9 @@ class FixMechanicRepositoryImpl(
     verificationId: String
   ): Result<MechanicProfile> {
     delay(600)
+    val uid = auth?.currentUser?.uid ?: ("mech_" + System.currentTimeMillis())
     val newProfile = MechanicProfile(
-      id = "mech_" + System.currentTimeMillis(),
+      id = uid,
       fullName = fullName,
       mobileNumber = mobileNumber,
       email = email,
@@ -231,32 +392,66 @@ class FixMechanicRepositoryImpl(
       registrationStatus = RegistrationStatus.PENDING,
       statusReason = "Registration submitted. KYC documents queued for verification by FixMechanic safety audit team.",
       isOnline = false,
-      isDemoMode = true,
+      isDemoMode = false,
       todayEarningsInr = 0.0,
       activeResponseRatePercent = 100
     )
     _profile.value = newProfile
     _currentUserMobile.value = mobileNumber
     _isAuthenticated.value = true
+
+    val firestore = db
+    if (auth?.currentUser != null && firestore != null) {
+      try {
+        val docRef = firestore.collection("mechanics").document(uid)
+        val existingSnap = docRef.get().await()
+        val createdAtVal = if (existingSnap.exists() && existingSnap.getTimestamp("createdAt") != null) {
+          existingSnap.getTimestamp("createdAt")
+        } else {
+          FieldValue.serverTimestamp()
+        }
+        docRef.set(
+          mapOf(
+            "userId" to uid,
+            "fullName" to fullName,
+            "mobileNumber" to mobileNumber,
+            "email" to email,
+            "workshopName" to workshopName,
+            "vehicleCapability" to capability.name,
+            "supportedServices" to services.map { it.name },
+            "serviceRadiusKm" to radiusKm,
+            "baseCityLocality" to cityLocality,
+            "experienceYears" to experienceYears,
+            "verificationIdNumber" to verificationId,
+            "registrationStatus" to "PENDING",
+            "statusReason" to "Registration submitted. KYC documents in verification queue.",
+            "isOnline" to false,
+            "createdAt" to createdAtVal,
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.CREATE, "mechanics/$uid")
+      }
+    }
+
     return Result.success(newProfile)
   }
 
   override suspend fun switchDemoProfile(profileId: String) {
     when (profileId) {
       "rajesh", "approved" -> {
-        _profile.value = approvedRajeshProfile
-        _currentUserMobile.value = approvedRajeshProfile.mobileNumber
+        _profile.value = defaultProfile.copy(registrationStatus = RegistrationStatus.APPROVED, isOnline = true)
+        _currentUserMobile.value = defaultProfile.mobileNumber
       }
       "amit", "pending" -> {
-        _profile.value = pendingAmitProfile
-        _currentUserMobile.value = pendingAmitProfile.mobileNumber
+        _profile.value = defaultProfile.copy(registrationStatus = RegistrationStatus.PENDING, isOnline = false)
         _currentOffer.value = null
         _activeJob.value = null
         countdownJob?.cancel()
       }
       "suresh", "suspended" -> {
-        _profile.value = suspendedSureshProfile
-        _currentUserMobile.value = suspendedSureshProfile.mobileNumber
+        _profile.value = defaultProfile.copy(registrationStatus = RegistrationStatus.SUSPENDED, isOnline = false)
         _currentOffer.value = null
         _activeJob.value = null
         countdownJob?.cancel()
@@ -265,6 +460,8 @@ class FixMechanicRepositoryImpl(
   }
 
   override suspend fun signOut() {
+    detachAllListeners()
+    auth?.signOut()
     _isAuthenticated.value = false
     _currentUserMobile.value = null
     _currentOffer.value = null
@@ -289,21 +486,69 @@ class FixMechanicRepositoryImpl(
         serviceRadiusKm = radiusKm
       )
     }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null) {
+      try {
+        firestore.collection("mechanics").document(uid).update(
+          mapOf(
+            "fullName" to fullName,
+            "workshopName" to workshopName,
+            "vehicleCapability" to capability.name,
+            "baseCityLocality" to cityLocality,
+            "serviceRadiusKm" to radiusKm,
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "mechanics/$uid")
+      }
+    }
     return Result.success(Unit)
   }
 
   override suspend fun updateVehicleCapability(capability: VehicleCapability): Result<Unit> {
     _profile.update { it.copy(vehicleCapability = capability) }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null) {
+      try {
+        firestore.collection("mechanics").document(uid).update("vehicleCapability", capability.name, "updatedAt", FieldValue.serverTimestamp()).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "mechanics/$uid")
+      }
+    }
     return Result.success(Unit)
   }
 
   override suspend fun updateServiceCategories(services: Set<ServiceCategory>): Result<Unit> {
     _profile.update { it.copy(supportedServices = services) }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null) {
+      try {
+        firestore.collection("mechanics").document(uid).update(
+          "supportedServices", services.map { it.name },
+          "updatedAt", FieldValue.serverTimestamp()
+        ).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "mechanics/$uid")
+      }
+    }
     return Result.success(Unit)
   }
 
   override suspend fun updateServiceRadius(radiusKm: Int): Result<Unit> {
     _profile.update { it.copy(serviceRadiusKm = radiusKm) }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null) {
+      try {
+        firestore.collection("mechanics").document(uid).update("serviceRadiusKm", radiusKm, "updatedAt", FieldValue.serverTimestamp()).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "mechanics/$uid")
+      }
+    }
     return Result.success(Unit)
   }
 
@@ -316,6 +561,17 @@ class FixMechanicRepositoryImpl(
     if (!online) {
       _currentOffer.value = null
       countdownJob?.cancel()
+    } else {
+      attachOffersListener()
+    }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null) {
+      try {
+        firestore.collection("mechanics").document(uid).update("isOnline", online, "updatedAt", FieldValue.serverTimestamp()).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "mechanics/$uid")
+      }
     }
     return Result.success(online)
   }
@@ -328,6 +584,20 @@ class FixMechanicRepositoryImpl(
         registrationStatus = RegistrationStatus.PENDING,
         statusReason = "Uploaded $docType. KYC verification under audit review by FixMechanic team."
       )
+    }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null) {
+      try {
+        firestore.collection("mechanics").document(uid).update(
+          "verificationIdNumber", idNumber,
+          "registrationStatus", "PENDING",
+          "statusReason", "Uploaded $docType. KYC verification under audit review.",
+          "updatedAt", FieldValue.serverTimestamp()
+        ).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "mechanics/$uid")
+      }
     }
     return Result.success(Unit)
   }
@@ -343,11 +613,10 @@ class FixMechanicRepositoryImpl(
   // --- Job Dispatch Repository Implementation ---
   override suspend fun acceptJobOffer(offerId: String): JobAcceptanceResult {
     val offer = _currentOffer.value
-    if (offer == null || offer.id != offerId) {
+    if (db == null && (offer == null || offer.id != offerId)) {
       return JobAcceptanceResult.Expired("This offer has expired or is no longer available.")
     }
 
-    // Mechanic Eligibility check: ONLY APPROVED mechanics who are ONLINE
     val prof = _profile.value
     if (prof.registrationStatus != RegistrationStatus.APPROVED) {
       return JobAcceptanceResult.NotEligible("Your registration status is ${prof.registrationStatus.label}. Only APPROVED mechanics may accept emergency requests.")
@@ -356,38 +625,95 @@ class FixMechanicRepositoryImpl(
       return JobAcceptanceResult.NotEligible("You are currently OFFLINE. Toggle Online to accept dispatches.")
     }
 
-    // Server-side assignment validation delay
-    delay(600)
+    // Check if live Firestore backend is connected
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null && !_isSimulateCompetitorSteal.value && (offer == null || !offer.simulateTakenByOther)) {
+      try {
+        val docRef = firestore.collection("emergency_requests").document(offerId)
+        firestore.runTransaction { tx ->
+          val snapshot = tx.get(docRef)
+          val status = snapshot.getString("status")
+          val assignedMechanicId = snapshot.getString("assignedMechanicId")
+          if (status != "PENDING_DISPATCH" || assignedMechanicId != null) {
+            throw IllegalStateException("This request has already been assigned")
+          }
+          tx.update(docRef, mapOf(
+            "status" to "ACCEPTED",
+            "assignedMechanicId" to uid,
+            "assignedMechanicName" to prof.fullName,
+            "assignedMechanicMobile" to prof.mobileNumber,
+            "updatedAt" to FieldValue.serverTimestamp()
+          ))
+          val mechRef = firestore.collection("mechanics").document(uid)
+          tx.update(mechRef, mapOf(
+            "activeJobId" to offerId,
+            "updatedAt" to FieldValue.serverTimestamp()
+          ))
+        }.await()
 
-    // CRITICAL ASSIGNMENT RULE: If another mechanic won first:
-    if (_isSimulateCompetitorSteal.value || offer.simulateTakenByOther) {
+        countdownJob?.cancel()
+        _currentOffer.value = null
+
+        val docSnap = docRef.get().await()
+        val acceptedJob = mapDocToActiveJob(docSnap)
+        _activeJob.value = acceptedJob
+        attachActiveJobListener(offerId)
+
+        return JobAcceptanceResult.Assigned(acceptedJob)
+      } catch (e: Exception) {
+        var isTaken = false
+        var curr: Throwable? = e
+        while (curr != null) {
+          if (curr.message?.contains("already been assigned") == true ||
+            curr.message?.contains("PERMISSION_DENIED") == true ||
+            (curr is FirebaseFirestoreException && curr.code == FirebaseFirestoreException.Code.PERMISSION_DENIED)
+          ) {
+            isTaken = true
+            break
+          }
+          curr = curr.cause
+        }
+        if (isTaken) {
+          _currentOffer.value = null
+          countdownJob?.cancel()
+          return JobAcceptanceResult.TakenByOther("This request has already been assigned")
+        }
+        handleFirestoreError(e, OperationType.UPDATE, "emergency_requests/$offerId")
+        return JobAcceptanceResult.Error(e.localizedMessage ?: "Failed to accept job offer.")
+      }
+    }
+
+    // Offline / Demo fallback
+    val fallbackOffer = offer ?: return JobAcceptanceResult.Expired("This offer has expired or is no longer available.")
+    delay(600)
+    if (_isSimulateCompetitorSteal.value || fallbackOffer.simulateTakenByOther) {
       _currentOffer.value = null
       countdownJob?.cancel()
       return JobAcceptanceResult.TakenByOther("This request has already been assigned")
     }
 
-    // Won and confirmed by the authoritative backend
     countdownJob?.cancel()
     _currentOffer.value = null
 
     val newJob = ActiveJob(
-      id = "job_" + offer.id,
-      requestCode = offer.requestCode,
+      id = "job_" + fallbackOffer.id,
+      requestCode = fallbackOffer.requestCode,
       status = JobStatus.ACCEPTED,
-      vehicleType = offer.vehicleType,
-      vehicleModel = offer.vehicleModel,
-      problemCategory = offer.problemCategory,
-      problemDescription = offer.problemDescription,
-      customerNotes = offer.customerNotes,
-      approxDistanceKm = offer.approxDistanceKm,
-      locality = offer.locality,
+      vehicleType = fallbackOffer.vehicleType,
+      vehicleModel = fallbackOffer.vehicleModel,
+      problemCategory = fallbackOffer.problemCategory,
+      problemDescription = fallbackOffer.problemDescription,
+      customerNotes = fallbackOffer.customerNotes,
+      approxDistanceKm = fallbackOffer.approxDistanceKm,
+      locality = fallbackOffer.locality,
       exactAddress = "Near Pillar #142, Outer Ring Road, Marathahalli flyover service lane, Bengaluru",
       customerDisplayName = "Rohan S.",
       customerSafetyStatus = "Driver in safe standing area beside road divider. Vehicle hazard blinkers on.",
       destinationLat = 12.9562,
       destinationLng = 77.7019,
       currentEtaMinutes = 14,
-      estimatedPayoutInr = offer.estimatedPayoutMinInr + ((offer.estimatedPayoutMaxInr - offer.estimatedPayoutMinInr) / 2),
+      estimatedPayoutInr = fallbackOffer.estimatedPayoutMinInr + ((fallbackOffer.estimatedPayoutMaxInr - fallbackOffer.estimatedPayoutMinInr) / 2),
       createdAtEpochMs = System.currentTimeMillis() - 60000L,
       assignedAtEpochMs = System.currentTimeMillis(),
       statusHistory = listOf(
@@ -396,28 +722,6 @@ class FixMechanicRepositoryImpl(
     )
 
     _activeJob.value = newJob
-
-    // Seed secure private chat
-    val initialChat = listOf(
-      ChatMessage(
-        id = "msg_sys_1",
-        jobId = newJob.id,
-        senderRole = SenderRole.SYSTEM_DISPATCH,
-        senderName = "FixMechanic Relay",
-        text = "Emergency request assigned to ${prof.fullName}. Customer contact details remain masked for privacy.",
-        timestampEpoch = System.currentTimeMillis()
-      ),
-      ChatMessage(
-        id = "msg_cust_1",
-        jobId = newJob.id,
-        senderRole = SenderRole.CUSTOMER,
-        senderName = "Rohan S.",
-        text = "Namaste. I am standing near the flyover pillar with the vehicle. Please let me know your approximate ETA.",
-        timestampEpoch = System.currentTimeMillis() + 1000
-      )
-    )
-    _messages.update { it + (newJob.id to initialChat) }
-
     return JobAcceptanceResult.Assigned(newJob)
   }
 
@@ -429,9 +733,8 @@ class FixMechanicRepositoryImpl(
 
   override suspend fun advanceJobStatus(jobId: String, nextStatus: JobStatus): Result<JobStatus> {
     val current = _activeJob.value ?: return Result.failure(IllegalStateException("No active job session"))
-    if (current.id != jobId) return Result.failure(IllegalArgumentException("Job ID mismatch"))
+    if (current.id != jobId && !jobId.contains(current.id)) return Result.failure(IllegalArgumentException("Job ID mismatch"))
 
-    // Strict state machine validation: NO ARBITRARY SKIPPING
     val validTransitions = mapOf(
       JobStatus.ACCEPTED to setOf(JobStatus.EN_ROUTE, JobStatus.CANCELLED),
       JobStatus.EN_ROUTE to setOf(JobStatus.ARRIVED, JobStatus.CANCELLED),
@@ -444,42 +747,39 @@ class FixMechanicRepositoryImpl(
       return Result.failure(IllegalStateException("Invalid transition from ${current.status.label} to ${nextStatus.label}. Sequential progression required."))
     }
 
-    delay(300)
-    val updatedHistory = current.statusHistory + StatusTimestamp(
-      nextStatus,
-      System.currentTimeMillis(),
-      "Status updated to ${nextStatus.label}"
-    )
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null && !jobId.startsWith("job_off_")) {
+      try {
+        val docRef = firestore.collection("emergency_requests").document(jobId)
+        docRef.update(
+          mapOf(
+            "status" to nextStatus.name,
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
 
-    val updatedEta = when (nextStatus) {
-      JobStatus.ACCEPTED -> 14
-      JobStatus.EN_ROUTE -> 8
-      JobStatus.ARRIVED -> 0
-      JobStatus.IN_PROGRESS -> 0
-      JobStatus.COMPLETED -> 0
-      JobStatus.CANCELLED -> 0
+        if (nextStatus == JobStatus.COMPLETED) {
+          firestore.collection("mechanics").document(uid).update(
+            mapOf(
+              "activeJobId" to null,
+              "totalCompletedJobs" to FieldValue.increment(1),
+              "todayEarningsInr" to FieldValue.increment(current.estimatedPayoutInr),
+              "updatedAt" to FieldValue.serverTimestamp()
+            )
+          ).await()
+        }
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "emergency_requests/$jobId")
+      }
     }
 
+    val updatedHistory = current.statusHistory + StatusTimestamp(nextStatus, System.currentTimeMillis(), "Status updated to ${nextStatus.label}")
     val updatedJob = current.copy(
       status = nextStatus,
-      currentEtaMinutes = updatedEta,
       statusHistory = updatedHistory
     )
     _activeJob.value = updatedJob
-
-    // System log into private chat
-    val systemMsg = ChatMessage(
-      id = "msg_sys_" + System.currentTimeMillis(),
-      jobId = jobId,
-      senderRole = SenderRole.SYSTEM_DISPATCH,
-      senderName = "FixMechanic Relay",
-      text = "Mechanic updated dispatch status: ${nextStatus.label}",
-      timestampEpoch = System.currentTimeMillis()
-    )
-    _messages.update { currentMap ->
-      val list = currentMap[jobId].orEmpty() + systemMsg
-      currentMap + (jobId to list)
-    }
 
     return Result.success(nextStatus)
   }
@@ -489,54 +789,37 @@ class FixMechanicRepositoryImpl(
     if (current.status == JobStatus.COMPLETED) {
       return Result.failure(IllegalStateException("Cannot cancel a completed job."))
     }
-    delay(300)
-    val cancelledJob = current.copy(
-      status = JobStatus.CANCELLED,
-      statusHistory = current.statusHistory + StatusTimestamp(JobStatus.CANCELLED, System.currentTimeMillis(), reason)
-    )
-    _activeJob.value = null
 
-    val historyItem = CompletedJobRecord(
-      id = current.id,
-      requestCode = current.requestCode,
-      completedAtDate = "Today, Just now",
-      vehicleInfo = current.vehicleModel,
-      serviceType = current.problemCategory.label,
-      locality = current.locality,
-      payoutInr = 0.0,
-      rating = 0f,
-      review = "Cancelled: $reason",
-      isCancelled = true
-    )
-    _completedHistory.update { listOf(historyItem) + it }
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null && !jobId.startsWith("job_off_")) {
+      try {
+        firestore.collection("emergency_requests").document(jobId).update(
+          mapOf(
+            "status" to "CANCELLED",
+            "cancellationReason" to reason,
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
+        firestore.collection("mechanics").document(uid).update("activeJobId", null, "updatedAt", FieldValue.serverTimestamp()).await()
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.UPDATE, "emergency_requests/$jobId")
+      }
+    }
+
+    _activeJob.value = null
     return Result.success(Unit)
   }
 
   override suspend fun submitJobQuote(jobId: String, quote: JobQuote): Result<JobQuote> {
     val current = _activeJob.value ?: return Result.failure(IllegalStateException("No active job"))
-    delay(400)
     val approvedQuote = quote.copy(status = QuoteStatus.APPROVED_BY_CUSTOMER)
     _activeJob.value = current.copy(quote = approvedQuote)
-
-    val quoteMsg = ChatMessage(
-      id = "msg_quote_" + System.currentTimeMillis(),
-      jobId = jobId,
-      senderRole = SenderRole.SYSTEM_DISPATCH,
-      senderName = "FixMechanic Billing",
-      text = "In-App quote of ₹${"%.0f".format(approvedQuote.totalCostInr)} submitted and authorized by customer.",
-      timestampEpoch = System.currentTimeMillis()
-    )
-    _messages.update { map ->
-      map + (jobId to (map[jobId].orEmpty() + quoteMsg))
-    }
-
     return Result.success(approvedQuote)
   }
 
   override suspend fun finalizeJobCompletion(jobId: String, report: CompletionReport): Result<Unit> {
     val current = _activeJob.value ?: return Result.failure(IllegalStateException("No active job"))
-    delay(500)
-
     val payout = report.finalPayoutAmountInr
     _todayEarningsInr.update { it + payout }
 
@@ -552,22 +835,8 @@ class FixMechanicRepositoryImpl(
       review = report.customerReview ?: "Quick roadside help. Mechanic was very knowledgeable and courteous.",
       isCancelled = false
     )
-
     _completedHistory.update { listOf(newRecord) + it }
     _activeJob.value = null
-
-    val closedMsg = ChatMessage(
-      id = "msg_close_" + System.currentTimeMillis(),
-      jobId = jobId,
-      senderRole = SenderRole.SYSTEM_DISPATCH,
-      senderName = "FixMechanic Security",
-      text = "Roadside assistance completed. Private chat session is now closed.",
-      timestampEpoch = System.currentTimeMillis()
-    )
-    _messages.update { map ->
-      map + (jobId to (map[jobId].orEmpty() + closedMsg))
-    }
-
     return Result.success(Unit)
   }
 
@@ -606,22 +875,6 @@ class FixMechanicRepositoryImpl(
         estimatedPayoutMaxInr = 500.0,
         totalCountdownSeconds = 30,
         remainingCountdownSeconds = 30
-      ),
-      JobOffer(
-        id = "off_in_103",
-        requestCode = "FIX-9104",
-        vehicleType = VehicleType.FOUR_WHEELER,
-        vehicleModel = "Maruti Suzuki Swift • Four-Wheeler",
-        problemCategory = ServiceCategory.FUEL_DELIVERY,
-        problemDescription = "Out of petrol. Engine died approaching flyover ramp.",
-        customerNotes = "Need 3 litres petrol in approved container to reach nearest fuel pump.",
-        approxDistanceKm = 2.4,
-        locality = "Old Airport Road near HAL Main Gate, Bengaluru",
-        safetyNotes = "Vehicle positioned safely in curb lane.",
-        estimatedPayoutMinInr = 450.0,
-        estimatedPayoutMaxInr = 650.0,
-        totalCountdownSeconds = 30,
-        remainingCountdownSeconds = 30
       )
     )
 
@@ -648,14 +901,77 @@ class FixMechanicRepositoryImpl(
   }
 
   // --- Chat Repository Implementation ---
-  override fun getMessages(jobId: String): Flow<List<ChatMessage>> {
-    return _messages.map { it[jobId].orEmpty() }
+  override fun getMessages(jobId: String): Flow<List<ChatMessage>> = callbackFlow {
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null && !jobId.startsWith("job_off_")) {
+      val messagesRef = firestore.collection("emergency_requests").document(jobId).collection("messages")
+      val registration = messagesRef.addSnapshotListener { snapshot, error ->
+        if (error != null) {
+          handleFirestoreError(error, OperationType.LIST, messagesRef.path)
+          close(error)
+          return@addSnapshotListener
+        }
+        if (snapshot != null) {
+          val list = snapshot.documents.map { doc ->
+            val roleStr = doc.getString("senderRole") ?: "CUSTOMER"
+            val role = try { SenderRole.valueOf(roleStr) } catch (_: Exception) { SenderRole.CUSTOMER }
+            ChatMessage(
+              id = doc.id,
+              jobId = jobId,
+              senderRole = role,
+              senderName = doc.getString("senderName") ?: "User",
+              text = doc.getString("text") ?: "",
+              timestampEpoch = doc.getTimestamp("createdAt")?.toDate()?.time ?: System.currentTimeMillis(),
+              status = MessageDeliveryStatus.DELIVERED
+            )
+          }.sortedBy { it.timestampEpoch }
+          trySend(list)
+        }
+      }
+      awaitClose { registration.remove() }
+    } else {
+      // In-memory fallback
+      val initial = _messages.value[jobId].orEmpty()
+      trySend(initial)
+      awaitClose {}
+    }
   }
 
   override suspend fun sendMessage(jobId: String, text: String, senderName: String): Result<ChatMessage> {
     val job = _activeJob.value ?: return Result.failure(IllegalStateException("No active job session"))
     if (!isChatAllowedForStatus(job.status)) {
       return Result.failure(IllegalStateException("Chat session is closed for status: ${job.status.label}"))
+    }
+
+    val uid = auth?.currentUser?.uid
+    val firestore = db
+    if (uid != null && firestore != null && !jobId.startsWith("job_off_")) {
+      val messagesRef = firestore.collection("emergency_requests").document(jobId).collection("messages")
+      try {
+        val payload = mapOf(
+          "jobId" to jobId,
+          "senderId" to uid,
+          "senderRole" to SenderRole.MECHANIC.name,
+          "senderName" to senderName,
+          "text" to text,
+          "createdAt" to FieldValue.serverTimestamp()
+        )
+        val docRef = messagesRef.add(payload).await()
+        val sentMsg = ChatMessage(
+          id = docRef.id,
+          jobId = jobId,
+          senderRole = SenderRole.MECHANIC,
+          senderName = senderName,
+          text = text,
+          timestampEpoch = System.currentTimeMillis(),
+          status = MessageDeliveryStatus.DELIVERED
+        )
+        return Result.success(sentMsg)
+      } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.CREATE, messagesRef.path)
+        return Result.failure(e)
+      }
     }
 
     val msg = ChatMessage(
@@ -667,44 +983,14 @@ class FixMechanicRepositoryImpl(
       timestampEpoch = System.currentTimeMillis(),
       status = MessageDeliveryStatus.DELIVERED
     )
-
     _messages.update { currentMap ->
       val list = currentMap[jobId].orEmpty() + msg
       currentMap + (jobId to list)
     }
-
-    // Auto customer response simulation
-    if (text.contains("ETA", ignoreCase = true) || text.contains("way", ignoreCase = true) || text.contains("arrive", ignoreCase = true) || text.contains("reached", ignoreCase = true)) {
-      scope.launch {
-        delay(1200)
-        val reply = ChatMessage(
-          id = "msg_reply_" + System.currentTimeMillis(),
-          jobId = jobId,
-          senderRole = SenderRole.CUSTOMER,
-          senderName = job.customerDisplayName,
-          text = "Thank you! I see you approaching. Staying safe next to the vehicle.",
-          timestampEpoch = System.currentTimeMillis(),
-          status = MessageDeliveryStatus.DELIVERED
-        )
-        _messages.update { map ->
-          map + (jobId to (map[jobId].orEmpty() + reply))
-        }
-      }
-    }
-
     return Result.success(msg)
   }
 
   override suspend fun retryFailedMessage(messageId: String): Result<Unit> {
-    delay(300)
-    val jobId = _activeJob.value?.id ?: return Result.failure(IllegalStateException("No active job"))
-    _messages.update { map ->
-      val currentList = map[jobId].orEmpty()
-      val updated = currentList.map { msg ->
-        if (msg.id == messageId) msg.copy(status = MessageDeliveryStatus.DELIVERED) else msg
-      }
-      map + (jobId to updated)
-    }
     return Result.success(Unit)
   }
 
@@ -766,6 +1052,5 @@ class FixMechanicRepositoryImpl(
   }
 
   override fun simulatePushAlert(title: String, message: String) {
-    // Background push notification trigger logger
   }
 }

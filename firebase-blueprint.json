@@ -1,0 +1,95 @@
+{
+  "entities": {
+    "Mechanic": {
+      "title": "Mechanic",
+      "description": "Registered roadside assistance mechanic profile and availability status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "email": { "type": "string" },
+        "workshopName": { "type": "string" },
+        "vehicleCapability": { "type": "string", "enum": ["BIKE", "CAR", "BOTH"] },
+        "supportedServices": { "type": "array" },
+        "serviceRadiusKm": { "type": "integer" },
+        "baseCityLocality": { "type": "string" },
+        "experienceYears": { "type": "integer" },
+        "verificationIdNumber": { "type": "string" },
+        "registrationStatus": { "type": "string", "enum": ["APPROVED", "PENDING", "REJECTED", "SUSPENDED"] },
+        "statusReason": { "type": "string" },
+        "isOnline": { "type": "boolean" },
+        "rating": { "type": "number" },
+        "totalCompletedJobs": { "type": "integer" },
+        "todayEarningsInr": { "type": "number" },
+        "activeJobId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "fullName", "mobileNumber", "registrationStatus", "isOnline", "createdAt"]
+    },
+    "EmergencyRequest": {
+      "title": "EmergencyRequest",
+      "description": "Roadside emergency request posted by customer and fulfilled by mechanic",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerDisplayName": { "type": "string" },
+        "vehicleType": { "type": "string" },
+        "vehicleModel": { "type": "string" },
+        "problemCategory": { "type": "string" },
+        "problemDescription": { "type": "string" },
+        "customerNotes": { "type": "string" },
+        "approxDistanceKm": { "type": "number" },
+        "locality": { "type": "string" },
+        "exactAddress": { "type": "string" },
+        "destinationLat": { "type": "number" },
+        "destinationLng": { "type": "number" },
+        "customerSafetyStatus": { "type": "string" },
+        "estimatedPayoutInr": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING_DISPATCH", "ACCEPTED", "EN_ROUTE", "ARRIVED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]
+        },
+        "assignedMechanicId": { "type": "string" },
+        "assignedMechanicName": { "type": "string" },
+        "assignedMechanicMobile": { "type": "string" },
+        "cancellationReason": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerId", "vehicleType", "problemCategory", "status", "createdAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Private in-app chat message between customer and assigned mechanic for an active emergency request",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "jobId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["MECHANIC", "CUSTOMER", "SYSTEM_DISPATCH"] },
+        "senderName": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobId", "senderId", "senderRole", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/mechanics/{mechanicId}": {
+      "schema": { "$ref": "#/entities/Mechanic" },
+      "description": "Mechanic profiles and availability state"
+    },
+    "/emergency_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/EmergencyRequest" },
+      "description": "Roadside emergency assistance requests"
+    },
+    "/emergency_requests/{requestId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Chat messages between customer and assigned mechanic"
+    }
+  }
+}

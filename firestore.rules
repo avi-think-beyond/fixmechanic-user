@@ -1,0 +1,156 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidMechanic(data) {
+      return data.userId is string && data.userId.size() <= 128 &&
+             data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100 &&
+             data.mobileNumber is string && data.mobileNumber.size() >= 8 && data.mobileNumber.size() <= 20 &&
+             (!('email' in data) || data.email is string) &&
+             (!('workshopName' in data) || data.workshopName is string) &&
+             data.registrationStatus in ['APPROVED', 'PENDING', 'REJECTED', 'SUSPENDED'] &&
+             data.isOnline is bool &&
+             (!('activeJobId' in data) || data.activeJobId == null || (data.activeJobId is string && data.activeJobId.size() <= 128));
+    }
+
+    function isValidEmergencyRequest(data) {
+      return data.customerId is string && data.customerId.size() <= 128 &&
+             data.vehicleType is string && data.vehicleType.size() <= 60 &&
+             data.problemCategory is string && data.problemCategory.size() <= 60 &&
+             data.status in ['PENDING_DISPATCH', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] &&
+             (!('assignedMechanicId' in data) || data.assignedMechanicId == null || (data.assignedMechanicId is string && data.assignedMechanicId.size() <= 128));
+    }
+
+    function isRequestParticipant(reqId) {
+      return isSignedIn() && (
+        get(/databases/$(database)/documents/emergency_requests/$(reqId)).data.customerId == request.auth.uid ||
+        get(/databases/$(database)/documents/emergency_requests/$(reqId)).data.assignedMechanicId == request.auth.uid
+      );
+    }
+
+    // Mechanics collection
+    match /mechanics/{mechanicId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.isOnline == true);
+
+      allow create: if isSignedIn() &&
+                       request.auth.uid == mechanicId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidMechanic(incoming());
+
+      allow update: if isSignedIn() &&
+                       request.auth.uid == mechanicId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidMechanic(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'fullName', 'workshopName', 'vehicleCapability', 'supportedServices',
+                         'serviceRadiusKm', 'baseCityLocality', 'experienceYears', 'verificationIdNumber',
+                         'isOnline', 'activeJobId', 'todayEarningsInr', 'totalCompletedJobs', 'rating',
+                         'updatedAt', 'statusReason', 'registrationStatus', 'email', 'mobileNumber'
+                       ]);
+
+      allow delete: if isSignedIn() && request.auth.uid == mechanicId;
+    }
+
+    // Emergency Roadside Assistance Requests
+    match /emergency_requests/{requestId} {
+      allow get: if isSignedIn() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.assignedMechanicId == request.auth.uid ||
+        resource.data.status == 'PENDING_DISPATCH'
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.status == 'PENDING_DISPATCH' ||
+        resource.data.assignedMechanicId == request.auth.uid ||
+        resource.data.customerId == request.auth.uid
+      );
+
+      // Customer creates emergency request
+      allow create: if isSignedIn() &&
+                       incoming().customerId == request.auth.uid &&
+                       incoming().status == 'PENDING_DISPATCH' &&
+                       (!('assignedMechanicId' in incoming()) || incoming().assignedMechanicId == null) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidEmergencyRequest(incoming());
+
+      // Updates: Claim by mechanic, progress by assigned mechanic, or cancellation by customer
+      allow update: if isSignedIn() &&
+                       incoming().customerId == existing().customerId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidEmergencyRequest(incoming()) &&
+                       (
+                         // Action 1: Atomic Claim by Mechanic (Only first mechanic wins when PENDING_DISPATCH)
+                         (
+                           existing().status == 'PENDING_DISPATCH' &&
+                           (!('assignedMechanicId' in existing()) || existing().assignedMechanicId == null) &&
+                           incoming().status == 'ACCEPTED' &&
+                           incoming().assignedMechanicId == request.auth.uid &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'assignedMechanicId', 'assignedMechanicName', 'assignedMechanicMobile', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 2: Progression by Assigned Mechanic
+                         (
+                           existing().assignedMechanicId == request.auth.uid &&
+                           incoming().assignedMechanicId == request.auth.uid &&
+                           incoming().status in ['EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'completionReport', 'quote', 'updatedAt', 'cancellationReason'
+                           ])
+                         ) ||
+                         // Action 3: Cancellation by Customer
+                         (
+                           existing().customerId == request.auth.uid &&
+                           incoming().status == 'CANCELLED' &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancellationReason', 'updatedAt'])
+                         )
+                       );
+
+      allow delete: if false;
+
+      // Private in-app chat subcollection
+      match /messages/{messageId} {
+        allow get, list: if isRequestParticipant(requestId);
+
+        allow create: if isRequestParticipant(requestId) &&
+                         incoming().senderId == request.auth.uid &&
+                         incoming().jobId == requestId &&
+                         incoming().createdAt is timestamp &&
+                         incoming().createdAt <= request.time &&
+                         incoming().text is string &&
+                         incoming().text.size() > 0 &&
+                         incoming().text.size() <= 1000 &&
+                         incoming().senderRole in ['MECHANIC', 'CUSTOMER', 'SYSTEM_DISPATCH'];
+
+        allow update, delete: if false;
+      }
+    }
+  }
+}
