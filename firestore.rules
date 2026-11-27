@@ -1,156 +1,196 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny catch-all
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function hasRoleInUsersDoc(roleName) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == roleName;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'ADMIN' ||
+        request.auth.token.admin == true ||
+        hasRoleInUsersDoc('ADMIN')
+      );
+    }
+
+    function isMechanic() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'MECHANIC' ||
+        hasRoleInUsersDoc('MECHANIC')
+      );
+    }
+
+    function isCustomer() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'CUSTOMER' ||
+        hasRoleInUsersDoc('CUSTOMER')
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Default: Strictly deny everything
     match /{document=**} {
       allow read, write: if false;
     }
 
-    function isSignedIn() {
-      return request.auth != null;
+    // 1. users
+    // Authenticated users can read their own user profile; admins can read all
+    // Clients can NEVER escalate to ADMIN or alter disabled flag directly
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) &&
+        (request.resource.data.role == 'CUSTOMER' || request.resource.data.role == 'MECHANIC');
+      allow update: if (isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'disabled'])) ||
+        isAdmin();
+      allow delete: if isAdmin();
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    // 2. customerProfiles
+    match /customerProfiles/{customerId} {
+      allow read: if isOwner(customerId) || isAdmin();
+      allow create, update: if isOwner(customerId);
+      allow delete: if isAdmin();
     }
 
-    function incoming() {
-      return request.resource.data;
+    // 3. mechanicProfiles
+    // Create: initial registration strictly in PENDING status and offline
+    // Update: mechanic can only update non-privileged fields and can only go online when APPROVED
+    match /mechanicProfiles/{mechanicId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(mechanicId) &&
+        request.resource.data.approvalStatus == 'PENDING' &&
+        (!('isOnline' in request.resource.data) || request.resource.data.isOnline == false) &&
+        (!('isBusy' in request.resource.data) || request.resource.data.isBusy == false);
+      allow update: if (isOwner(mechanicId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'approvalStatus',
+          'rejectionReason',
+          'statusReason',
+          'verifiedAt',
+          'verifiedBy',
+          'ratingAverage',
+          'ratingCount',
+          'isBusy',
+          'activeJobId',
+          'totalCompletedJobs',
+          'todayEarningsInr'
+        ]) &&
+        (!('isOnline' in request.resource.data) ||
+          request.resource.data.isOnline == false ||
+          resource.data.approvalStatus == 'APPROVED')) ||
+        isAdmin();
+      allow delete: if isAdmin();
     }
 
-    function existing() {
-      return resource.data;
+    // 4. mechanicServiceAreas & serviceCategories
+    match /mechanicServiceAreas/{areaId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
-    function isValidMechanic(data) {
-      return data.userId is string && data.userId.size() <= 128 &&
-             data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100 &&
-             data.mobileNumber is string && data.mobileNumber.size() >= 8 && data.mobileNumber.size() <= 20 &&
-             (!('email' in data) || data.email is string) &&
-             (!('workshopName' in data) || data.workshopName is string) &&
-             data.registrationStatus in ['APPROVED', 'PENDING', 'REJECTED', 'SUSPENDED'] &&
-             data.isOnline is bool &&
-             (!('activeJobId' in data) || data.activeJobId == null || (data.activeJobId is string && data.activeJobId.size() <= 128));
+    match /serviceCategories/{categoryId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
-    function isValidEmergencyRequest(data) {
-      return data.customerId is string && data.customerId.size() <= 128 &&
-             data.vehicleType is string && data.vehicleType.size() <= 60 &&
-             data.problemCategory is string && data.problemCategory.size() <= 60 &&
-             data.status in ['PENDING_DISPATCH', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] &&
-             (!('assignedMechanicId' in data) || data.assignedMechanicId == null || (data.assignedMechanicId is string && data.assignedMechanicId.size() <= 128));
-    }
-
-    function isRequestParticipant(reqId) {
-      return isSignedIn() && (
-        get(/databases/$(database)/documents/emergency_requests/$(reqId)).data.customerId == request.auth.uid ||
-        get(/databases/$(database)/documents/emergency_requests/$(reqId)).data.assignedMechanicId == request.auth.uid
-      );
-    }
-
-    // Mechanics collection
-    match /mechanics/{mechanicId} {
-      allow get: if isSignedIn();
-      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.isOnline == true);
-
-      allow create: if isSignedIn() &&
-                       request.auth.uid == mechanicId &&
-                       incoming().userId == request.auth.uid &&
-                       incoming().createdAt is timestamp &&
-                       incoming().createdAt <= request.time &&
-                       isValidMechanic(incoming());
-
-      allow update: if isSignedIn() &&
-                       request.auth.uid == mechanicId &&
-                       incoming().userId == existing().userId &&
-                       incoming().createdAt == existing().createdAt &&
-                       isValidMechanic(incoming()) &&
-                       incoming().diff(existing()).affectedKeys().hasOnly([
-                         'fullName', 'workshopName', 'vehicleCapability', 'supportedServices',
-                         'serviceRadiusKm', 'baseCityLocality', 'experienceYears', 'verificationIdNumber',
-                         'isOnline', 'activeJobId', 'todayEarningsInr', 'totalCompletedJobs', 'rating',
-                         'updatedAt', 'statusReason', 'registrationStatus', 'email', 'mobileNumber'
-                       ]);
-
-      allow delete: if isSignedIn() && request.auth.uid == mechanicId;
-    }
-
-    // Emergency Roadside Assistance Requests
-    match /emergency_requests/{requestId} {
-      allow get: if isSignedIn() && (
+    // 5. serviceRequests
+    // Privileged mutations (creation, dispatch, assignment, status transitions) MUST go through Backend API
+    match /serviceRequests/{requestId} {
+      allow read: if isAuthenticated() && (
         resource.data.customerId == request.auth.uid ||
         resource.data.assignedMechanicId == request.auth.uid ||
-        resource.data.status == 'PENDING_DISPATCH'
+        isAdmin()
       );
+      allow write: if isAdmin();
+    }
 
-      allow list: if isSignedIn() && (
-        resource.data.status == 'PENDING_DISPATCH' ||
-        resource.data.assignedMechanicId == request.auth.uid ||
-        resource.data.customerId == request.auth.uid
+    // 6. jobOffers
+    // Mechanics can ONLY read offers targeted specifically to their mechanicId
+    match /jobOffers/{offerId} {
+      allow read: if isAuthenticated() && (
+        resource.data.mechanicId == request.auth.uid ||
+        isAdmin()
       );
+      allow write: if isAdmin();
+    }
 
-      // Customer creates emergency request
-      allow create: if isSignedIn() &&
-                       incoming().customerId == request.auth.uid &&
-                       incoming().status == 'PENDING_DISPATCH' &&
-                       (!('assignedMechanicId' in incoming()) || incoming().assignedMechanicId == null) &&
-                       incoming().createdAt is timestamp &&
-                       incoming().createdAt <= request.time &&
-                       isValidEmergencyRequest(incoming());
+    // 7. jobAssignments
+    match /jobAssignments/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.mechanicId == request.auth.uid ||
+        isAdmin()
+      );
+      allow write: if isAdmin();
+    }
 
-      // Updates: Claim by mechanic, progress by assigned mechanic, or cancellation by customer
-      allow update: if isSignedIn() &&
-                       incoming().customerId == existing().customerId &&
-                       incoming().createdAt == existing().createdAt &&
-                       isValidEmergencyRequest(incoming()) &&
-                       (
-                         // Action 1: Atomic Claim by Mechanic (Only first mechanic wins when PENDING_DISPATCH)
-                         (
-                           existing().status == 'PENDING_DISPATCH' &&
-                           (!('assignedMechanicId' in existing()) || existing().assignedMechanicId == null) &&
-                           incoming().status == 'ACCEPTED' &&
-                           incoming().assignedMechanicId == request.auth.uid &&
-                           incoming().diff(existing()).affectedKeys().hasOnly([
-                             'status', 'assignedMechanicId', 'assignedMechanicName', 'assignedMechanicMobile', 'updatedAt'
-                           ])
-                         ) ||
-                         // Action 2: Progression by Assigned Mechanic
-                         (
-                           existing().assignedMechanicId == request.auth.uid &&
-                           incoming().assignedMechanicId == request.auth.uid &&
-                           incoming().status in ['EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] &&
-                           incoming().diff(existing()).affectedKeys().hasOnly([
-                             'status', 'completionReport', 'quote', 'updatedAt', 'cancellationReason'
-                           ])
-                         ) ||
-                         // Action 3: Cancellation by Customer
-                         (
-                           existing().customerId == request.auth.uid &&
-                           incoming().status == 'CANCELLED' &&
-                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancellationReason', 'updatedAt'])
-                         )
-                       );
+    // 8. jobStatusEvents
+    match /jobStatusEvents/{eventId} {
+      allow read: if isAuthenticated() && (
+        resource.data.actorId == request.auth.uid ||
+        isAdmin()
+      );
+      allow write: if isAdmin();
+    }
 
-      allow delete: if false;
+    // 9. jobChats and jobMessages
+    match /jobChats/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.mechanicId == request.auth.uid ||
+        isAdmin()
+      );
+      allow write: if isAdmin();
 
-      // Private in-app chat subcollection
-      match /messages/{messageId} {
-        allow get, list: if isRequestParticipant(requestId);
-
-        allow create: if isRequestParticipant(requestId) &&
-                         incoming().senderId == request.auth.uid &&
-                         incoming().jobId == requestId &&
-                         incoming().createdAt is timestamp &&
-                         incoming().createdAt <= request.time &&
-                         incoming().text is string &&
-                         incoming().text.size() > 0 &&
-                         incoming().text.size() <= 1000 &&
-                         incoming().senderRole in ['MECHANIC', 'CUSTOMER', 'SYSTEM_DISPATCH'];
-
-        allow update, delete: if false;
+      match /jobMessages/{messageId} {
+        allow read: if isAuthenticated() && (
+          get(/databases/$(database)/documents/jobChats/$(requestId)).data.customerId == request.auth.uid ||
+          get(/databases/$(database)/documents/jobChats/$(requestId)).data.mechanicId == request.auth.uid ||
+          isAdmin()
+        );
+        allow create: if isAuthenticated() &&
+          get(/databases/$(database)/documents/jobChats/$(requestId)).data.status == 'OPEN' &&
+          (get(/databases/$(database)/documents/jobChats/$(requestId)).data.customerId == request.auth.uid ||
+           get(/databases/$(database)/documents/jobChats/$(requestId)).data.mechanicId == request.auth.uid) &&
+          request.resource.data.senderId == request.auth.uid;
+        allow update, delete: if isAdmin();
       }
+    }
+
+    // 10. ratings
+    match /ratings/{ratingId} {
+      allow read: if isAuthenticated();
+      allow create: if isCustomer() && request.resource.data.customerId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // 11. deviceTokens
+    match /deviceTokens/{tokenId} {
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+      allow create, update: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // 12. adminAuditLogs
+    match /adminAuditLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    // 13. applicationConfig
+    match /applicationConfig/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
   }
 }

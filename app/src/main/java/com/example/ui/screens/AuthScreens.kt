@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -277,12 +278,19 @@ fun OnboardingScreen(
 // ----------------------------------------------------
 @Composable
 fun MechanicLoginScreen(
+  onEmailSignIn: (email: String, password: String) -> Unit = { _, _ -> },
+  onEmailCreateAccount: (email: String, password: String) -> Unit = { _, _ -> },
+  onGoogleAuthSuccess: () -> Unit = {},
   onSendOtp: (mobile: String) -> Unit,
-  onFastDemoLogin: (persona: String) -> Unit,
+  onFastDemoLogin: (persona: String) -> Unit = {},
   onNavigateToRegister: () -> Unit,
   modifier: Modifier = Modifier
 ) {
-  var mobileNumber by remember { mutableStateOf("9876543210") }
+  var email by remember { mutableStateOf("") }
+  var password by remember { mutableStateOf("") }
+  var mobileNumber by remember { mutableStateOf("") }
+  var isCreateMode by remember { mutableStateOf(false) }
+  var authError by remember { mutableStateOf<String?>(null) }
   val scrollState = rememberScrollState()
 
   Column(
@@ -293,8 +301,6 @@ fun MechanicLoginScreen(
       .padding(24.dp)
   ) {
     Spacer(modifier = Modifier.height(16.dp))
-
-    // Header
     Row(verticalAlignment = Alignment.CenterVertically) {
       Box(
         modifier = Modifier
@@ -320,132 +326,162 @@ fun MechanicLoginScreen(
           )
         )
         Text(
-          text = "Mobile OTP Authentication (India)",
+          text = "Verified Roadside Partner Console",
           style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
         )
       }
     }
 
-    Spacer(modifier = Modifier.height(28.dp))
-
+    Spacer(modifier = Modifier.height(24.dp))
     Text(
-      text = "Mechanic Sign In",
+      text = if (isCreateMode) "Create Partner Account" else "Mechanic Sign In",
       style = MaterialTheme.typography.headlineSmall.copy(
         fontWeight = FontWeight.ExtraBold,
         color = Navy900
       )
     )
     Text(
-      text = "Enter your 10-digit registered Indian mobile number",
+      text = "Sign in with Google or Email & Password (Spark compatible).",
       style = MaterialTheme.typography.bodyMedium.copy(color = Navy700)
     )
 
-    Spacer(modifier = Modifier.height(24.dp))
-
-    OutlinedTextField(
-      value = mobileNumber,
-      onValueChange = { if (it.length <= 10 && it.all { char -> char.isDigit() }) mobileNumber = it },
-      label = { Text("Mobile Number") },
-      prefix = { Text("+91  ", fontWeight = FontWeight.Bold, color = Navy900) },
-      leadingIcon = { Icon(Icons.Outlined.Phone, contentDescription = null, tint = Navy700) },
-      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-      singleLine = true,
-      modifier = Modifier
-        .fillMaxWidth()
-        .testTag("login_mobile_input"),
-      shape = RoundedCornerShape(10.dp)
-    )
+    Spacer(modifier = Modifier.height(16.dp))
+    authError?.let { err ->
+      Surface(
+        color = EmergencyRedLight,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+      ) {
+        Text(
+          text = err,
+          color = EmergencyRedDark,
+          fontSize = 12.sp,
+          modifier = Modifier.padding(10.dp)
+        )
+      }
+    }
 
     com.example.ui.auth.GoogleSignInButton(
       onAuthSuccess = {
-        onFastDemoLogin("rajesh")
+        authError = null
+        onGoogleAuthSuccess()
       },
-      onAuthError = { }
+      onAuthError = { authError = it }
     )
 
     Spacer(modifier = Modifier.height(16.dp))
-
     Row(
       modifier = Modifier.fillMaxWidth(),
       verticalAlignment = Alignment.CenterVertically
     ) {
       HorizontalDivider(modifier = Modifier.weight(1f), color = BorderLight)
       Text(
-        text = "  OR INDIAN MOBILE OTP  ",
+        text = "  OR EMAIL & PASSWORD  ",
         style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontWeight = FontWeight.Bold)
       )
       HorizontalDivider(modifier = Modifier.weight(1f), color = BorderLight)
     }
 
-    Spacer(modifier = Modifier.height(16.dp))
+    Spacer(modifier = Modifier.height(14.dp))
+    OutlinedTextField(
+      value = email,
+      onValueChange = { email = it },
+      label = { Text("Workshop Email") },
+      leadingIcon = { Icon(Icons.Outlined.Email, contentDescription = null, tint = Navy700) },
+      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+      singleLine = true,
+      shape = RoundedCornerShape(10.dp),
+      modifier = Modifier.fillMaxWidth().testTag("login_email_input")
+    )
+    Spacer(modifier = Modifier.height(10.dp))
+    OutlinedTextField(
+      value = password,
+      onValueChange = { password = it },
+      label = { Text("Password (min 6 chars)") },
+      leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null, tint = Navy700) },
+      visualTransformation = PasswordVisualTransformation(),
+      singleLine = true,
+      shape = RoundedCornerShape(10.dp),
+      modifier = Modifier.fillMaxWidth().testTag("login_password_input")
+    )
 
+    Spacer(modifier = Modifier.height(14.dp))
     Button(
       onClick = {
-        val fullNumber = "+91$mobileNumber"
-        onSendOtp(fullNumber)
+        authError = null
+        if (email.isBlank() || password.length < 6) {
+          authError = "Enter a valid email and at least 6 characters for password."
+        } else if (isCreateMode) {
+          onEmailCreateAccount(email, password)
+        } else {
+          onEmailSignIn(email, password)
+        }
       },
-      enabled = mobileNumber.length == 10,
       colors = ButtonDefaults.buttonColors(containerColor = Navy900),
       shape = RoundedCornerShape(10.dp),
       modifier = Modifier
         .fillMaxWidth()
         .height(52.dp)
-        .testTag("login_send_otp_btn")
+        .testTag("login_email_submit_btn")
     ) {
-      Icon(Icons.Filled.Sms, contentDescription = null, modifier = Modifier.size(18.dp))
-      Spacer(modifier = Modifier.width(8.dp))
-      Text("Send Verification OTP", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+      Text(
+        text = if (isCreateMode) "Create Account & Continue" else "Sign In with Email",
+        fontWeight = FontWeight.Bold,
+        fontSize = 15.sp
+      )
     }
 
-    Spacer(modifier = Modifier.height(20.dp))
+    TextButton(
+      onClick = { isCreateMode = !isCreateMode },
+      modifier = Modifier.align(Alignment.CenterHorizontally)
+    ) {
+      Text(
+        text = if (isCreateMode) "Already have an account? Sign In" else "New partner? Create Email Account",
+        color = Navy900,
+        fontWeight = FontWeight.SemiBold
+      )
+    }
 
-    // Fast Demo Personas
+    Spacer(modifier = Modifier.height(12.dp))
     Surface(
       color = SurfaceVariantSlate,
-      shape = RoundedCornerShape(12.dp),
+      shape = RoundedCornerShape(10.dp),
       border = androidx.compose.foundation.BorderStroke(1.dp, BorderLight),
       modifier = Modifier.fillMaxWidth()
     ) {
-      Column(modifier = Modifier.padding(14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Filled.Science, contentDescription = null, tint = WarningAmberDark, modifier = Modifier.size(18.dp))
-          Spacer(modifier = Modifier.width(6.dp))
-          Text(
-            text = "DEMO FAST PERSONA LOGINS",
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Navy900)
-          )
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          OutlinedButton(
-            onClick = { onFastDemoLogin("rajesh") },
-            modifier = Modifier.weight(1f).testTag("demo_login_rajesh"),
-            shape = RoundedCornerShape(8.dp)
-          ) {
-            Text("Rajesh (Approved)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = OnlineGreenDark)
-          }
-          OutlinedButton(
-            onClick = { onFastDemoLogin("amit") },
-            modifier = Modifier.weight(1f).testTag("demo_login_amit"),
-            shape = RoundedCornerShape(8.dp)
-          ) {
-            Text("Amit (Pending)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = WarningAmberDark)
-          }
+      Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+          text = "Mobile SMS OTP (Requires Firebase Blaze Plan)",
+          style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Navy900)
+        )
+        OutlinedTextField(
+          value = mobileNumber,
+          onValueChange = { if (it.length <= 10 && it.all { ch -> ch.isDigit() }) mobileNumber = it },
+          label = { Text("10-Digit Mobile (Optional)") },
+          prefix = { Text("+91 ", fontWeight = FontWeight.Bold) },
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().testTag("login_mobile_input")
+        )
+        OutlinedButton(
+          onClick = { onSendOtp("+91$mobileNumber") },
+          enabled = mobileNumber.length == 10,
+          modifier = Modifier.fillMaxWidth().testTag("login_send_otp_btn")
+        ) {
+          Text("Request Phone OTP (Blaze Only)")
         }
       }
     }
 
-    Spacer(modifier = Modifier.height(24.dp))
-
+    Spacer(modifier = Modifier.height(16.dp))
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      Text("New to FixMechanic?", color = Navy700, fontSize = 14.sp)
-      Spacer(modifier = Modifier.width(4.dp))
+      Text("Signed in already?", color = Navy700, fontSize = 13.sp)
       TextButton(onClick = onNavigateToRegister) {
-        Text("Register Your Workshop", color = EmergencyRed, fontWeight = FontWeight.Bold)
+        Text("Register Workshop Profile", color = EmergencyRed, fontWeight = FontWeight.Bold)
       }
     }
   }

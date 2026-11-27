@@ -1,6 +1,5 @@
 package com.example
 
-import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -12,34 +11,32 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.example.data.FixMechanicRepositoryImpl
-import com.example.model.JobAcceptanceResult
-import com.example.model.JobStatus
 import com.example.ui.MechanicViewModel
 import com.example.ui.navigation.MechanicScreen
 import com.example.ui.screens.*
 import com.example.ui.theme.FixMechanicTheme
 
 class MainActivity : ComponentActivity() {
-
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
-
     val repository = FixMechanicRepositoryImpl(this, lifecycleScope)
     val viewModel = MechanicViewModel(repository)
-
     val credentialManager = androidx.credentials.CredentialManager.create(this)
     com.example.ui.auth.attemptAutoSignIn(
       context = this,
       credentialManager = credentialManager,
-      onAuthSuccess = { },
+      onAuthSuccess = {
+        viewModel.registerFcmToken()
+        viewModel.syncGpsLocation(this)
+      },
       onUnauthenticated = { },
       scope = lifecycleScope
     )
-
     setContent {
       FixMechanicTheme {
         MechanicAppRoot(viewModel = viewModel)
@@ -50,8 +47,11 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MechanicAppRoot(viewModel: MechanicViewModel) {
+  val context = LocalContext.current
+  val isAuthenticated by viewModel.isAuthenticated.collectAsStateWithLifecycle()
   var screenStack by remember { mutableStateOf(listOf(MechanicScreen.SPLASH)) }
-  var pendingMobileForOtp by remember { mutableStateOf("+91 98765 43210") }
+  var pendingMobileForOtp by remember { mutableStateOf("") }
+
   val currentScreen = screenStack.lastOrNull() ?: MechanicScreen.DASHBOARD
 
   fun navigateTo(screen: MechanicScreen) {
@@ -66,14 +66,13 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
 
   fun popTo(screen: MechanicScreen) {
     val idx = screenStack.indexOf(screen)
-    if (idx >= 0) {
-      screenStack = screenStack.take(idx + 1)
+    screenStack = if (idx >= 0) {
+      screenStack.take(idx + 1)
     } else {
-      screenStack = listOf(screen)
+      listOf(screen)
     }
   }
 
-  // BackHandler to handle backstack navigation
   BackHandler(enabled = screenStack.size > 1) {
     navigateBack()
   }
@@ -93,56 +92,75 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
   val isLocationPermissionGranted by viewModel.isLocationPermissionGranted.collectAsStateWithLifecycle()
   val isGpsEnabled by viewModel.isGpsEnabled.collectAsStateWithLifecycle()
 
+  LaunchedEffect(isAuthenticated) {
+    if (isAuthenticated) {
+      viewModel.registerFcmToken()
+      viewModel.syncGpsLocation(context)
+    }
+  }
+
   Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
     Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
       when (currentScreen) {
         MechanicScreen.SPLASH -> {
           SplashScreen(
             onNavigateNext = {
-              screenStack = listOf(MechanicScreen.ONBOARDING)
+              screenStack = if (isAuthenticated) {
+                listOf(MechanicScreen.DASHBOARD)
+              } else {
+                listOf(MechanicScreen.ONBOARDING)
+              }
             }
           )
         }
-
         MechanicScreen.ONBOARDING -> {
           OnboardingScreen(
             onCompleteOnboarding = {
-              screenStack = listOf(MechanicScreen.DASHBOARD)
+              screenStack = if (isAuthenticated) {
+                listOf(MechanicScreen.REGISTRATION)
+              } else {
+                listOf(MechanicScreen.LOGIN)
+              }
             },
             onGoToLogin = {
               navigateTo(MechanicScreen.LOGIN)
             }
           )
         }
-
         MechanicScreen.LOGIN -> {
           MechanicLoginScreen(
-            onSendOtp = { mobile ->
-              pendingMobileForOtp = mobile
-              viewModel.sendOtp(mobile) { success, _ ->
+            onEmailSignIn = { email, pass ->
+              viewModel.signInWithEmail(email, pass) { success, _ ->
+                if (success) popTo(MechanicScreen.DASHBOARD)
+              }
+            },
+            onEmailCreateAccount = { email, pass ->
+              viewModel.registerWithEmail(email, pass) { success, _ ->
                 if (success) {
-                  navigateTo(MechanicScreen.OTP_VERIFY)
+                  screenStack = listOf(MechanicScreen.DASHBOARD, MechanicScreen.REGISTRATION)
                 }
               }
             },
-            onFastDemoLogin = { persona ->
-              viewModel.switchDemoProfile(persona)
+            onGoogleAuthSuccess = {
               popTo(MechanicScreen.DASHBOARD)
+            },
+            onSendOtp = { mobile ->
+              pendingMobileForOtp = mobile
+              viewModel.sendOtp(mobile) { success, _ ->
+                if (success) navigateTo(MechanicScreen.OTP_VERIFY)
+              }
             },
             onNavigateToRegister = {
               navigateTo(MechanicScreen.REGISTRATION)
             }
           )
         }
-
         MechanicScreen.OTP_VERIFY -> {
           OtpVerificationScreen(
             mobileNumber = pendingMobileForOtp,
             onVerifyOtp = { otpCode ->
               viewModel.verifyOtp(pendingMobileForOtp, otpCode) { success, _ ->
-                if (success) {
-                  popTo(MechanicScreen.DASHBOARD)
-                }
+                if (success) popTo(MechanicScreen.DASHBOARD)
               }
             },
             onResendOtp = {
@@ -151,7 +169,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.REGISTRATION -> {
           MechanicRegistrationScreen(
             onRegisterSubmit = { name, mobile, email, workshop, cap, srv, rad, city, exp, idNo ->
@@ -162,7 +179,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.DASHBOARD -> {
           DashboardScreen(
             profile = profile,
@@ -175,7 +191,7 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             isGpsEnabled = isGpsEnabled,
             onCheckPermissions = { ctx -> viewModel.checkDevicePermissions(ctx) },
             onSetLocationPermission = { granted -> viewModel.setLocationPermissionGranted(granted) },
-            onToggleOnline = { viewModel.toggleOnlineStatus(!profile.isOnline) },
+            onToggleOnline = { viewModel.toggleOnlineStatus(!profile.isOnline, context) },
             onOpenSettings = { navigateTo(MechanicScreen.PROFILE_SUPPORT) },
             onOpenActiveJob = { navigateTo(MechanicScreen.ACTIVE_JOB) },
             onOpenHistory = { navigateTo(MechanicScreen.JOB_HISTORY) },
@@ -184,10 +200,10 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onSwitchProfile = { persona -> viewModel.switchDemoProfile(persona) },
             onToggleCompetitorMode = { enabled -> viewModel.toggleCompetitorSteal(enabled) },
             onSimulateJobOffer = { scenarioIdx -> viewModel.triggerSimulatedOffer(scenarioIdx) },
-            onDismissBanner = { viewModel.dismissBanner() }
+            onDismissBanner = { viewModel.dismissBanner() },
+            onSyncLocation = { ctx -> viewModel.syncGpsLocation(ctx) }
           )
         }
-
         MechanicScreen.VERIFICATION -> {
           VerificationStatusScreen(
             profile = profile,
@@ -197,7 +213,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.VEHICLES_SERVICES -> {
           VehicleAndServicesScreen(
             currentCapability = profile.vehicleCapability,
@@ -207,7 +222,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.SERVICE_RADIUS -> {
           ServiceAreaRadiusScreen(
             currentRadiusKm = profile.serviceRadiusKm,
@@ -216,7 +230,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.EDIT_PROFILE -> {
           EditProfileScreen(
             profile = profile,
@@ -226,7 +239,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.PROFILE_SUPPORT -> {
           ProfileAndSupportScreen(
             profile = profile,
@@ -241,7 +253,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onNavigateBack = { navigateBack() }
           )
         }
-
         MechanicScreen.ACTIVE_JOB -> {
           val job = activeJob
           if (job != null) {
@@ -264,7 +275,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             popTo(MechanicScreen.DASHBOARD)
           }
         }
-
         MechanicScreen.QUOTE_SUBMISSION -> {
           val job = activeJob
           if (job != null) {
@@ -277,7 +287,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             navigateBack()
           }
         }
-
         MechanicScreen.PRIVATE_CHAT -> {
           val job = activeJob
           if (job != null) {
@@ -294,7 +303,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             navigateBack()
           }
         }
-
         MechanicScreen.JOB_COMPLETION -> {
           val job = activeJob
           if (job != null) {
@@ -310,7 +318,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             navigateBack()
           }
         }
-
         MechanicScreen.JOB_HISTORY -> {
           JobHistoryAndEarningsScreen(
             completedHistory = completedHistory,
@@ -320,7 +327,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
         }
       }
 
-      // GLOBAL INCOMING EMERGENCY JOB OFFER MODAL
       val offer = currentOffer
       if (offer != null && activeJob == null) {
         IncomingJobOfferDialog(
@@ -331,7 +337,6 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
         )
       }
 
-      // ASSIGNMENT CONFIRMATION / REJECTION RESULT DIALOG
       val acceptanceResult = lastAcceptanceResult
       if (acceptanceResult != null) {
         AssignmentResultDialog(

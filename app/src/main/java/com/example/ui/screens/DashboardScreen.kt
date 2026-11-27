@@ -55,6 +55,7 @@ fun DashboardScreen(
   onToggleCompetitorMode: (Boolean) -> Unit,
   onSimulateJobOffer: (Int) -> Unit,
   onDismissBanner: () -> Unit,
+  onSyncLocation: (Context) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -71,6 +72,11 @@ fun DashboardScreen(
 
   LaunchedEffect(Unit) {
     onCheckPermissions(context)
+  }
+  LaunchedEffect(profile.isOnline, isLocationPermissionGranted) {
+    if (profile.isOnline && isLocationPermissionGranted) {
+      onSyncLocation(context)
+    }
   }
 
   Scaffold(
@@ -194,7 +200,7 @@ fun DashboardScreen(
               Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = OnlineGreen, modifier = Modifier.size(14.dp))
               Spacer(modifier = Modifier.width(6.dp))
               Text(
-                text = "GPS & Notification permissions verified • Dispatch telemetry ready",
+                text = "GPS verified • Live dispatch location active",
                 style = MaterialTheme.typography.bodySmall.copy(color = Navy700, fontSize = 11.sp)
               )
             }

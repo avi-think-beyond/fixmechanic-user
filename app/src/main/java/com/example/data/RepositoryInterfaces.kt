@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
 interface AuthRepository {
   val currentUserMobile: StateFlow<String?>
   val isAuthenticated: StateFlow<Boolean>
+
+  suspend fun signInWithEmail(email: String, password: String): Result<MechanicProfile>
+  suspend fun registerWithEmail(email: String, password: String): Result<Unit>
   suspend fun sendOtp(mobileNumber: String): Result<String>
   suspend fun verifyOtp(mobileNumber: String, otpCode: String): Result<MechanicProfile>
   suspend fun registerMechanic(
@@ -28,6 +31,8 @@ interface AuthRepository {
 
 interface MechanicProfileRepository {
   val profile: StateFlow<MechanicProfile>
+  val isSimulateCompetitorSteal: StateFlow<Boolean>
+
   suspend fun updateProfileDetails(
     fullName: String,
     workshopName: String,
@@ -36,13 +41,12 @@ interface MechanicProfileRepository {
     radiusKm: Int
   ): Result<Unit>
   suspend fun updateVehicleCapability(capability: VehicleCapability): Result<Unit>
-  suspend fun updateServiceCategories(services: Set<ServiceCategory>): Result<Unit>
+  suspend fun updateServiceCategories(categories: Set<ServiceCategory>): Result<Unit>
   suspend fun updateServiceRadius(radiusKm: Int): Result<Unit>
-  suspend fun toggleOnlineStatus(online: Boolean): Result<Boolean>
+  suspend fun toggleOnlineStatus(isOnline: Boolean): Result<Boolean>
   suspend fun submitKycDocuments(idNumber: String, docType: String): Result<Unit>
-  suspend fun toggleDemoMode(enabled: Boolean)
-  suspend fun setSimulateCompetitorSteal(enabled: Boolean)
-  val isSimulateCompetitorSteal: StateFlow<Boolean>
+  suspend fun updateGpsLocation(lat: Double, lng: Double, address: String? = null): Result<Unit>
+  fun setSimulateCompetitorSteal(enabled: Boolean)
 }
 
 interface JobDispatchRepository {
