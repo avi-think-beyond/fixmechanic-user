@@ -67,4 +67,174 @@ class ExampleUnitTest {
     assertFalse(repository.isChatAllowedForStatus(JobStatus.COMPLETED))
     assertFalse(repository.isChatAllowedForStatus(JobStatus.CANCELLED))
   }
+
+  @Test
+  fun testUpdateServiceAreaAndPincode() = testScope.runTest {
+    val repository = FixMechanicRepositoryImpl(testScope)
+    val initialProfile = repository.profile.value
+    assertEquals("560038", initialProfile.pincode)
+
+    val updateResult = repository.updateServiceAreaAndPincode(
+      cityLocality = "Koramangala 4th Block, Bengaluru",
+      pincode = "560034",
+      radiusKm = 20,
+      servicePincodes = listOf("560034", "560095", "560047")
+    )
+
+    assertTrue(updateResult.isSuccess)
+    val updatedProfile = repository.profile.value
+    assertEquals("Koramangala 4th Block, Bengaluru", updatedProfile.baseCityLocality)
+    assertEquals("560034", updatedProfile.pincode)
+    assertEquals(20, updatedProfile.serviceRadiusKm)
+    assertEquals(listOf("560034", "560095", "560047"), updatedProfile.servicePincodes)
+  }
+
+  @Test
+  fun testDispatchSchemaMapper_ParsesCustomerSearchingRequestAndHaversineDistance() {
+    val data = mapOf(
+      "userId" to "cust_001",
+      "status" to "SEARCHING_FOR_MECHANICS",
+      "mechanicId" to "",
+      "vehicle" to "Two Wheeler - Bike",
+      "vehicleName" to "Honda Activa 6G",
+      "serviceType" to "Flat Tyre / Puncture",
+      "description" to "Rear tyre flat near metro station",
+      "address" to "Indiranagar Metro Station, 100ft Road",
+      "pincode" to "560038",
+      "latitude" to 12.9784,
+      "longitude" to 77.6408,
+      "estimatedPrice" to 400.0
+    )
+
+    val offer = com.example.data.DispatchSchemaMapper.mapRawToJobOffer(
+      id = "req_live_001",
+      data = data,
+      sourceCollection = "service_requests",
+      mechanicLat = 12.9716,
+      mechanicLng = 77.5946
+    )
+
+    assertNotNull(offer)
+    assertEquals("service_requests", offer!!.sourceCollection)
+    assertEquals(com.example.model.VehicleType.TWO_WHEELER, offer.vehicleType)
+    assertEquals("Honda Activa 6G", offer.vehicleModel)
+    assertEquals(com.example.model.ServiceCategory.PUNCTURE_TYRE, offer.problemCategory)
+    assertTrue(offer.approxDistanceKm in 4.5..5.6)
+    assertTrue(offer.locality.contains("560038"))
+  }
+
+  @Test
+  fun testDispatchSchemaMapper_SkipsAlreadyAssignedOrClosedRequests() {
+    val assignedData = mapOf(
+      "status" to "SEARCHING",
+      "mechanicId" to "mech_999"
+    )
+    assertNull(
+      com.example.data.DispatchSchemaMapper.mapRawToJobOffer(
+        id = "req_taken",
+        data = assignedData,
+        sourceCollection = "service_requests",
+        mechanicLat = 12.9716,
+        mechanicLng = 77.5946
+      )
+    )
+
+    val completedData = mapOf(
+      "status" to "COMPLETED",
+      "mechanicId" to ""
+    )
+    assertNull(
+      com.example.data.DispatchSchemaMapper.mapRawToJobOffer(
+        id = "req_done",
+        data = completedData,
+        sourceCollection = "emergency_requests",
+        mechanicLat = 12.9716,
+        mechanicLng = 77.5946
+      )
+    )
+  }
+
+  @Test
+  fun testUpdateProfileDetailsAndCoordinates() = testScope.runTest {
+    val repository = FixMechanicRepositoryImpl(testScope)
+    val res = repository.updateProfileDetails(
+      fullName = "Vikram Nair",
+      workshopName = "Nair Auto Care",
+      capability = com.example.model.VehicleCapability.BOTH,
+      cityLocality = "Andheri West, Mumbai",
+      radiusKm = 25,
+      pincode = "400053",
+      latitude = 19.1363,
+      longitude = 72.8277
+    )
+
+    assertTrue(res.isSuccess)
+    val updated = repository.profile.value
+    assertEquals("Vikram Nair", updated.fullName)
+    assertEquals("Andheri West, Mumbai", updated.baseCityLocality)
+    assertEquals("400053", updated.pincode)
+    assertEquals(25, updated.serviceRadiusKm)
+    assertEquals(19.1363, updated.latitude, 0.0001)
+    assertEquals(72.8277, updated.longitude, 0.0001)
+    assertTrue(updated.servicePincodes.contains("400053"))
+  }
+
+  @Test
+  fun testExtractCoordinatesSupportsShopLatLngAndGeoPoint() {
+    val (lat1, lng1) = com.example.data.DispatchSchemaMapper.extractCoordinates(
+      mapOf("shopLat" to 19.1363, "shopLng" to 72.8277)
+    )
+    assertEquals(19.1363, lat1!!, 0.0001)
+    assertEquals(72.8277, lng1!!, 0.0001)
+
+    val (lat2, lng2) = com.example.data.DispatchSchemaMapper.extractCoordinates(
+      mapOf("location" to com.google.firebase.firestore.GeoPoint(28.6315, 77.2167))
+    )
+    assertEquals(28.6315, lat2!!, 0.0001)
+    assertEquals(77.2167, lng2!!, 0.0001)
+  }
+
+  @Test
+  fun testSyncInitialDeviceLocation_DefaultsUntilCustomLocationSaved() = testScope.runTest {
+    val repository = FixMechanicRepositoryImpl(testScope)
+    assertFalse(repository.profile.value.hasCustomLocation)
+
+    // 1. Before custom location is saved, mobile GPS coordinates update default locality/PIN/coords
+    repository.syncInitialDeviceLocation(
+      latitude = 17.4435,
+      longitude = 78.3772,
+      locality = "Madhapur, Hyderabad",
+      pincode = "500081"
+    )
+    assertEquals(17.4435, repository.profile.value.latitude, 0.0001)
+    assertEquals(78.3772, repository.profile.value.longitude, 0.0001)
+    assertEquals("Madhapur, Hyderabad", repository.profile.value.baseCityLocality)
+    assertEquals("500081", repository.profile.value.pincode)
+    assertFalse(repository.profile.value.hasCustomLocation)
+
+    // 2. Saving profile details marks hasCustomLocation = true
+    repository.updateProfileDetails(
+      fullName = "Suresh Reddy",
+      workshopName = "Reddy Motors",
+      capability = com.example.model.VehicleCapability.BOTH,
+      cityLocality = "Gachibowli, Hyderabad",
+      radiusKm = 20,
+      pincode = "500032",
+      latitude = 17.4401,
+      longitude = 78.3489
+    )
+    assertTrue(repository.profile.value.hasCustomLocation)
+
+    // 3. Subsequent non-forced mobile GPS sync must NOT clobber the explicitly saved workshop location
+    repository.syncInitialDeviceLocation(
+      latitude = 19.1363,
+      longitude = 72.8277,
+      locality = "Andheri West, Mumbai",
+      pincode = "400053"
+    )
+    assertEquals(17.4401, repository.profile.value.latitude, 0.0001)
+    assertEquals(78.3489, repository.profile.value.longitude, 0.0001)
+    assertEquals("Gachibowli, Hyderabad", repository.profile.value.baseCityLocality)
+    assertEquals("500032", repository.profile.value.pincode)
+  }
 }

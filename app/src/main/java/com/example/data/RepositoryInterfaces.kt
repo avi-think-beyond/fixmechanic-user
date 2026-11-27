@@ -38,7 +38,18 @@ interface MechanicProfileRepository {
     workshopName: String,
     capability: VehicleCapability,
     cityLocality: String,
-    radiusKm: Int
+    radiusKm: Int,
+    pincode: String = "560038",
+    latitude: Double = 12.9716,
+    longitude: Double = 77.5946
+  ): Result<Unit>
+  suspend fun updateServiceAreaAndPincode(
+    cityLocality: String,
+    pincode: String,
+    radiusKm: Int,
+    servicePincodes: List<String>,
+    latitude: Double = 12.9716,
+    longitude: Double = 77.5946
   ): Result<Unit>
   suspend fun updateVehicleCapability(capability: VehicleCapability): Result<Unit>
   suspend fun updateServiceCategories(categories: Set<ServiceCategory>): Result<Unit>
@@ -51,6 +62,7 @@ interface MechanicProfileRepository {
 
 interface JobDispatchRepository {
   val currentOffer: StateFlow<JobOffer?>
+  val availableOffers: StateFlow<List<JobOffer>>
   val activeJob: StateFlow<ActiveJob?>
   val completedHistory: StateFlow<List<CompletedJobRecord>>
   val todayEarningsInr: StateFlow<Double>

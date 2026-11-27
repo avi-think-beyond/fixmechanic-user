@@ -24,6 +24,7 @@
         "totalCompletedJobs": { "type": "integer" },
         "todayEarningsInr": { "type": "number" },
         "activeJobId": { "type": "string" },
+        "activeJobCollection": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -31,11 +32,12 @@
     },
     "EmergencyRequest": {
       "title": "EmergencyRequest",
-      "description": "Roadside emergency request posted by customer and fulfilled by mechanic",
+      "description": "Roadside emergency or service request posted by customer and fulfilled by mechanic",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "customerId": { "type": "string" },
+        "userId": { "type": "string" },
         "customerDisplayName": { "type": "string" },
         "vehicleType": { "type": "string" },
         "vehicleModel": { "type": "string" },
@@ -51,16 +53,17 @@
         "estimatedPayoutInr": { "type": "number" },
         "status": {
           "type": "string",
-          "enum": ["PENDING_DISPATCH", "ACCEPTED", "EN_ROUTE", "ARRIVED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]
+          "enum": ["PENDING_DISPATCH", "PENDING", "SEARCHING", "SEARCHING_FOR_MECHANICS", "OPEN", "ACCEPTED", "EN_ROUTE", "ARRIVED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]
         },
         "assignedMechanicId": { "type": "string" },
+        "mechanicId": { "type": "string" },
         "assignedMechanicName": { "type": "string" },
         "assignedMechanicMobile": { "type": "string" },
         "cancellationReason": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["customerId", "vehicleType", "problemCategory", "status", "createdAt"]
+      "required": ["status"]
     },
     "ChatMessage": {
       "title": "ChatMessage",
