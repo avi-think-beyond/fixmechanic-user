@@ -121,6 +121,31 @@ fun ActiveJobScreen(
             .padding(16.dp)
         ) {
           when (activeJob.status) {
+            JobStatus.ASSIGNED -> {
+              Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                  onClick = { showCancelDialog = true },
+                  colors = ButtonDefaults.outlinedButtonColors(contentColor = EmergencyRedDark),
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier.height(52.dp)
+                ) {
+                  Text("Cancel", fontWeight = FontWeight.Bold)
+                }
+                Button(
+                  onClick = { onAdvanceStatus(JobStatus.ACCEPTED) },
+                  colors = ButtonDefaults.buttonColors(containerColor = Navy900),
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp)
+                    .testTag("action_confirm_accept_btn")
+                ) {
+                  Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                  Spacer(modifier = Modifier.width(8.dp))
+                  Text("Confirm Acceptance", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+              }
+            }
             JobStatus.ACCEPTED -> {
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(

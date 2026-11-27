@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.FixMechanicRepositoryImpl
+import com.example.data.MechanicLocationHelper
 import com.example.model.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -41,7 +42,6 @@ class MechanicViewModel(
   private val _isGpsEnabled = MutableStateFlow(true)
   val isGpsEnabled: StateFlow<Boolean> = _isGpsEnabled.asStateFlow()
 
-  // Chat message stream connected to current active job
   val activeChatMessages: StateFlow<List<ChatMessage>> = activeJob
     .flatMapLatest { job ->
       if (job != null) repository.getMessages(job.id) else flowOf(emptyList())
@@ -60,17 +60,45 @@ class MechanicViewModel(
     }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-  // Auth Operations
+  fun signInWithEmail(email: String, password: String, onResult: (Boolean, String) -> Unit) {
+    viewModelScope.launch {
+      val res = repository.signInWithEmail(email, password)
+      res.onSuccess {
+        _statusBannerMessage.value = "Signed in as ${it.email}"
+        onResult(true, "Signed in successfully")
+      }.onFailure { err ->
+        val msg = err.localizedMessage ?: "Email sign-in failed"
+        _statusBannerMessage.value = msg
+        onResult(false, msg)
+      }
+    }
+  }
+
+  fun registerWithEmail(email: String, password: String, onResult: (Boolean, String) -> Unit) {
+    viewModelScope.launch {
+      val res = repository.registerWithEmail(email, password)
+      res.onSuccess {
+        _statusBannerMessage.value = "Account created! Complete partner workshop registration."
+        onResult(true, "Account created")
+      }.onFailure { err ->
+        val msg = err.localizedMessage ?: "Account creation failed"
+        _statusBannerMessage.value = msg
+        onResult(false, msg)
+      }
+    }
+  }
+
   fun sendOtp(mobileNumber: String, onResult: (Boolean, String) -> Unit) {
     viewModelScope.launch {
       val res = repository.sendOtp(mobileNumber)
       res.onSuccess { msg ->
         _isOtpSent.value = true
-        _otpVerificationId.value = "mock_verification_id_${System.currentTimeMillis()}"
         _statusBannerMessage.value = msg
         onResult(true, msg)
       }.onFailure { err ->
-        onResult(false, err.localizedMessage ?: "Failed to send OTP")
+        val msg = err.localizedMessage ?: "Phone OTP requires Blaze billing."
+        _statusBannerMessage.value = msg
+        onResult(false, msg)
       }
     }
   }
@@ -80,10 +108,11 @@ class MechanicViewModel(
       val res = repository.verifyOtp(mobileNumber, otpCode)
       res.onSuccess {
         _isOtpSent.value = false
-        _statusBannerMessage.value = "Welcome back, ${it.fullName}"
         onResult(true, "Authentication successful")
       }.onFailure { err ->
-        onResult(false, err.localizedMessage ?: "Invalid OTP")
+        val msg = err.localizedMessage ?: "OTP unavailable on Spark"
+        _statusBannerMessage.value = msg
+        onResult(false, msg)
       }
     }
   }
@@ -107,7 +136,7 @@ class MechanicViewModel(
         experienceYears, verificationId
       )
       res.onSuccess {
-        _statusBannerMessage.value = "Registration submitted! KYC verification pending."
+        _statusBannerMessage.value = "Registration submitted! Pending Operations Admin verification."
       }.onFailure {
         _statusBannerMessage.value = "Registration error: ${it.localizedMessage}"
       }
@@ -115,32 +144,46 @@ class MechanicViewModel(
   }
 
   fun signOut() {
-    viewModelScope.launch {
-      repository.signOut()
-    }
+    viewModelScope.launch { repository.signOut() }
   }
 
   fun switchDemoProfile(profileId: String) {
+    viewModelScope.launch { repository.switchDemoProfile(profileId) }
+  }
+
+  fun toggleOnlineStatus(online: Boolean, context: Context? = null) {
     viewModelScope.launch {
-      repository.switchDemoProfile(profileId)
-      _statusBannerMessage.value = when (profileId) {
-        "rajesh", "approved" -> "Switched to Rajesh Kumar (Approved 24/7 Mechanic)"
-        "amit", "pending" -> "Switched to Amit Sharma (Pending KYC Verification)"
-        "suresh", "suspended" -> "Switched to Suresh Patil (Account Suspended)"
-        else -> "Switched profile"
+      val res = repository.toggleOnlineStatus(online)
+      res.onSuccess {
+        _statusBannerMessage.value = if (online) {
+          "You are now ONLINE for emergency dispatches"
+        } else {
+          "You are now OFFLINE"
+        }
+        if (online && context != null) {
+          syncGpsLocation(context)
+        }
+      }.onFailure {
+        _statusBannerMessage.value = it.localizedMessage
       }
     }
   }
 
-  // Profile and Capabilities
-  fun toggleOnlineStatus(online: Boolean) {
+  fun syncGpsLocation(context: Context) {
     viewModelScope.launch {
-      val res = repository.toggleOnlineStatus(online)
-      res.onSuccess {
-        _statusBannerMessage.value = if (online) "You are now ONLINE for emergency dispatches" else "You are now OFFLINE"
-      }.onFailure {
-        _statusBannerMessage.value = it.localizedMessage
+      val coords = MechanicLocationHelper.fetchCurrentLocation(context)
+      if (coords != null) {
+        repository.updateGpsLocation(coords.lat, coords.lng, coords.address)
+          .onSuccess {
+            _statusBannerMessage.value = "Live GPS location synced (${coords.address ?: "GPS active"})"
+          }
       }
+    }
+  }
+
+  fun registerFcmToken() {
+    viewModelScope.launch {
+      repository.getOrRegisterFcmToken()
     }
   }
 
@@ -152,17 +195,14 @@ class MechanicViewModel(
     radius: Int
   ) {
     viewModelScope.launch {
-      val res = repository.updateProfileDetails(name, workshop, capability, city, radius)
-      res.onSuccess {
-        _statusBannerMessage.value = "Profile updated successfully."
-      }
+      repository.updateProfileDetails(name, workshop, capability, city, radius)
+        .onSuccess { _statusBannerMessage.value = "Profile updated successfully." }
+        .onFailure { _statusBannerMessage.value = "Update failed: ${it.localizedMessage}" }
     }
   }
 
   fun setVehicleCapability(capability: VehicleCapability) {
-    viewModelScope.launch {
-      repository.updateVehicleCapability(capability)
-    }
+    viewModelScope.launch { repository.updateVehicleCapability(capability) }
   }
 
   fun toggleServiceCategory(category: ServiceCategory) {
@@ -178,25 +218,21 @@ class MechanicViewModel(
   }
 
   fun updateServiceRadius(radiusKm: Int) {
-    viewModelScope.launch {
-      repository.updateServiceRadius(radiusKm)
-    }
+    viewModelScope.launch { repository.updateServiceRadius(radiusKm) }
   }
 
   fun submitKycProof(idNumber: String, docType: String) {
     viewModelScope.launch {
       repository.submitKycDocuments(idNumber, docType)
-      _statusBannerMessage.value = "KYC documents submitted for review."
+        .onSuccess { _statusBannerMessage.value = "KYC documents submitted for review." }
+        .onFailure { _statusBannerMessage.value = "KYC error: ${it.localizedMessage}" }
     }
   }
 
   fun toggleCompetitorSteal(simulateSteal: Boolean) {
-    viewModelScope.launch {
-      repository.setSimulateCompetitorSteal(simulateSteal)
-    }
+    viewModelScope.launch { repository.setSimulateCompetitorSteal(simulateSteal) }
   }
 
-  // Dispatch & Jobs
   fun acceptJobOffer(offerId: String) {
     viewModelScope.launch {
       _isAcceptingOffer.value = true
@@ -207,9 +243,7 @@ class MechanicViewModel(
   }
 
   fun rejectJobOffer(offerId: String) {
-    viewModelScope.launch {
-      repository.rejectJobOffer(offerId)
-    }
+    viewModelScope.launch { repository.rejectJobOffer(offerId) }
   }
 
   fun clearAcceptanceResult() {
@@ -218,43 +252,33 @@ class MechanicViewModel(
 
   fun advanceJobStatus(jobId: String, nextStatus: JobStatus) {
     viewModelScope.launch {
-      val res = repository.advanceJobStatus(jobId, nextStatus)
-      res.onSuccess {
-        _statusBannerMessage.value = "Status updated to: ${it.label}"
-      }.onFailure {
-        _statusBannerMessage.value = it.localizedMessage
-      }
+      repository.advanceJobStatus(jobId, nextStatus)
+        .onSuccess { _statusBannerMessage.value = "Status updated to: ${it.label}" }
+        .onFailure { _statusBannerMessage.value = it.localizedMessage }
     }
   }
 
   fun cancelJob(jobId: String, reason: String) {
     viewModelScope.launch {
-      val res = repository.cancelJob(jobId, reason)
-      res.onSuccess {
-        _statusBannerMessage.value = "Job cancelled: $reason"
-      }
+      repository.cancelJob(jobId, reason)
+        .onSuccess { _statusBannerMessage.value = "Job cancelled & returned to dispatch queue." }
+        .onFailure { _statusBannerMessage.value = it.localizedMessage }
     }
   }
 
   fun submitQuote(jobId: String, quote: JobQuote) {
     viewModelScope.launch {
-      val res = repository.submitJobQuote(jobId, quote)
-      res.onSuccess {
-        _statusBannerMessage.value = "Quote submitted & authorized by customer"
-      }.onFailure {
-        _statusBannerMessage.value = "Quote error: ${it.localizedMessage}"
-      }
+      repository.submitJobQuote(jobId, quote)
+        .onSuccess { _statusBannerMessage.value = "Quote submitted to customer" }
+        .onFailure { _statusBannerMessage.value = "Quote error: ${it.localizedMessage}" }
     }
   }
 
   fun finalizeJobCompletion(jobId: String, report: CompletionReport) {
     viewModelScope.launch {
-      val res = repository.finalizeJobCompletion(jobId, report)
-      res.onSuccess {
-        _statusBannerMessage.value = "Job completed! Payout ₹${"%.0f".format(report.finalPayoutAmountInr)} credited."
-      }.onFailure {
-        _statusBannerMessage.value = "Completion error: ${it.localizedMessage}"
-      }
+      repository.finalizeJobCompletion(jobId, report)
+        .onSuccess { _statusBannerMessage.value = "Job completed! Payout ₹${"%.0f".format(report.finalPayoutAmountInr)} recorded." }
+        .onFailure { _statusBannerMessage.value = "Completion error: ${it.localizedMessage}" }
     }
   }
 
@@ -266,21 +290,18 @@ class MechanicViewModel(
     repository.dismissCurrentOffer()
   }
 
-  // Chat
   fun sendChatMessage(text: String) {
     val job = activeJob.value ?: return
     viewModelScope.launch {
       repository.sendMessage(job.id, text, profile.value.fullName)
+        .onFailure { _statusBannerMessage.value = it.localizedMessage }
     }
   }
 
   fun retryMessage(messageId: String) {
-    viewModelScope.launch {
-      repository.retryFailedMessage(messageId)
-    }
+    viewModelScope.launch { repository.retryFailedMessage(messageId) }
   }
 
-  // Location & Navigation
   fun launchNavigation(context: Context) {
     val job = activeJob.value ?: return
     repository.openExternalTurnByTurn(context, job.destinationLat, job.destinationLng, job.exactAddress)

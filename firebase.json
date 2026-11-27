@@ -1,18 +1,44 @@
 {
-  "firestore": [
-    {
-      "database": "ai-studio-android-fixmecha-c79c4219-452a-44ab-9171-b0cad529995c",
-      "rules": "firestore.rules"
-    }
-  ],
+  "functions": {
+    "source": "functions",
+    "predeploy": [
+      "npm --prefix \"$RESOURCE_DIR\" run build"
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
   "emulators": {
+    "auth": {
+      "host": "127.0.0.1",
+      "port": 9099
+    },
+    "functions": {
+      "host": "127.0.0.1",
+      "port": 5001
+    },
     "firestore": {
       "host": "127.0.0.1",
       "port": 8085
     },
-    "auth": {
+    "hosting": {
       "host": "127.0.0.1",
-      "port": 9099
+      "port": 5000
     },
     "ui": {
       "enabled": false

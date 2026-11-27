@@ -524,12 +524,14 @@ fun JobCompletionScreen(
           Button(
             onClick = {
               val report = CompletionReport(
-                diagnosticFindings = diagnosticFindings,
-                workPerformed = workPerformed,
-                partsReplaced = partsReplaced,
-                photosAttachedCount = 3,
-                customerSignoffToken = signoffToken,
-                laborHours = laborHours.toDoubleOrNull() ?: 0.5,
+                workPerformedSummary = buildString {
+                  append(workPerformed.trim())
+                  if (diagnosticFindings.isNotBlank()) append(" | Findings: ${diagnosticFindings.trim()}")
+                  if (partsReplaced.isNotBlank()) append(" | Parts: ${partsReplaced.trim()}")
+                },
+                safetyChecklistPassed = true,
+                customerSignOffToken = signoffToken,
+                totalLaborHours = laborHours.toDoubleOrNull() ?: 0.5,
                 finalPayoutAmountInr = totalPayout,
                 customerRating = 5.0f,
                 customerReview = "Prompt response. Mechanic resolved issue on roadside safely!"
