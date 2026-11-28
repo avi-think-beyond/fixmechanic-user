@@ -7,12 +7,14 @@ const { test, before, after, beforeEach } = require("node:test");
 const fs = require("node:fs");
 
 let testEnv;
-const PROJECT_ID = process.env.GCP_PROJECT || "demo-no-project";
+const PROJECT_ID = process.env.GCP_PROJECT || "fixmechanic-firebase";
 const MECHANIC_UID = "mechanic_123";
 const MECHANIC_2_UID = "mechanic_456";
 const CUSTOMER_UID = "customer_789";
 
-const [emulatorHost, emulatorPortStr] = (process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8085").split(":");
+const [emulatorHost, emulatorPortStr] = (
+  process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8085"
+).split(":");
 const emulatorPort = parseInt(emulatorPortStr, 10);
 
 before(async () => {
@@ -39,123 +41,219 @@ beforeEach(async () => {
   }
 });
 
-test("Unauthenticated user: cannot read mechanics or customer requests", async () => {
+test("Unauthenticated users cannot read or write any FixMechanic collections", async () => {
   const unauthDb = testEnv.unauthenticatedContext().firestore();
-  await assertFails(unauthDb.collection("mechanics").doc("some_id").get());
-  await assertFails(unauthDb.collection("emergency_requests").doc("req_1").get());
-  await assertFails(unauthDb.collection("service_requests").doc("req_2").get());
+  await assertFails(unauthDb.collection("users").doc(MECHANIC_UID).get());
+  await assertFails(unauthDb.collection("mechanicProfiles").doc(MECHANIC_UID).get());
+  await assertFails(unauthDb.collection("serviceRequests").doc("req_1").get());
+  await assertFails(unauthDb.collection("jobOffers").doc("offer_1").get());
 });
 
-test("Mechanic can create and update own profile, but cannot update another mechanic", async () => {
-  const mechanicDb = testEnv.authenticatedContext(MECHANIC_UID).firestore();
+test("Users collection: owner can create MECHANIC role, update own profile, but cannot escalate to ADMIN", async () => {
+  const m1Db = testEnv.authenticatedContext(MECHANIC_UID).firestore();
 
   await assertSucceeds(
-    mechanicDb.collection("mechanics").doc(MECHANIC_UID).set({
+    m1Db.collection("users").doc(MECHANIC_UID).set({
+      uid: MECHANIC_UID,
+      role: "MECHANIC",
+      fullName: "Ramesh Sharma",
+      disabled: false,
+    })
+  );
+
+  await assertSucceeds(
+    m1Db.collection("users").doc(MECHANIC_UID).update({
+      fullName: "Ramesh K. Sharma",
+    })
+  );
+
+  // Role escalation must fail
+  await assertFails(
+    m1Db.collection("users").doc(MECHANIC_UID).update({
+      role: "ADMIN",
+    })
+  );
+
+  // Reading another user's doc must fail
+  const m2Db = testEnv.authenticatedContext(MECHANIC_2_UID).firestore();
+  await assertFails(m2Db.collection("users").doc(MECHANIC_UID).get());
+});
+
+test("mechanicProfiles: mechanic can create PENDING profile, save address/map/PIN updates, and cannot self-approve or go online while PENDING", async () => {
+  const m1Db = testEnv.authenticatedContext(MECHANIC_UID).firestore();
+
+  // Cannot create directly as APPROVED
+  await assertFails(
+    m1Db.collection("mechanicProfiles").doc(MECHANIC_UID).set({
       userId: MECHANIC_UID,
       fullName: "Ramesh Sharma",
-      mobileNumber: "+919876543210",
-      registrationStatus: "APPROVED",
+      approvalStatus: "APPROVED",
       isOnline: true,
-      createdAt: new Date(Date.now() - 1000),
+      isBusy: false,
     })
   );
 
+  // Creating initial PENDING + offline profile succeeds
+  await assertSucceeds(
+    m1Db.collection("mechanicProfiles").doc(MECHANIC_UID).set({
+      userId: MECHANIC_UID,
+      fullName: "Ramesh Sharma",
+      workshopName: "Sharma Auto Care",
+      approvalStatus: "PENDING",
+      isOnline: false,
+      isBusy: false,
+      baseCity: "Sector 56, Gurugram",
+      pincode: "122002",
+      servicePincodes: ["122002"],
+      serviceRadiusKm: 15,
+      lat: 28.4595,
+      lng: 77.0266,
+      hasCustomLocation: false,
+    })
+  );
+
+  // Saving non-privileged profile details, map coordinates, pincode, and service radius succeeds
+  await assertSucceeds(
+    m1Db.collection("mechanicProfiles").doc(MECHANIC_UID).update({
+      fullName: "Ramesh Sharma",
+      workshopName: "Sharma Auto Works",
+      baseCity: "Andheri West, Mumbai",
+      serviceArea: "Andheri West, Mumbai",
+      pincode: "400053",
+      servicePincodes: ["400053", "400058"],
+      serviceRadiusKm: 20,
+      lat: 19.1363,
+      lng: 72.8277,
+      hasCustomLocation: true,
+      currentLocation: {
+        lat: 19.1363,
+        lng: 72.8277,
+        address: "Andheri West, Mumbai",
+      },
+    })
+  );
+
+  // Going online while still PENDING must fail
   await assertFails(
-    mechanicDb.collection("mechanics").doc(MECHANIC_2_UID).set({
-      userId: MECHANIC_2_UID,
-      fullName: "Impostor",
-      mobileNumber: "+919876543210",
-      registrationStatus: "APPROVED",
+    m1Db.collection("mechanicProfiles").doc(MECHANIC_UID).update({
       isOnline: true,
-      createdAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Modifying privileged approvalStatus must fail
+  await assertFails(
+    m1Db.collection("mechanicProfiles").doc(MECHANIC_UID).update({
+      approvalStatus: "APPROVED",
     })
   );
 });
 
-test("Live dispatch query: mechanic can query SEARCHING service_requests and PENDING_DISPATCH emergency_requests", async () => {
-  const custDb = testEnv.authenticatedContext(CUSTOMER_UID).firestore();
-  await assertSucceeds(
-    custDb.collection("service_requests").doc("srv_1").set({
-      userId: CUSTOMER_UID,
-      serviceType: "Tyre Puncture",
-      vehicleType: "TWO_WHEELER",
-      status: "SEARCHING_FOR_MECHANICS",
-      mechanicId: "",
-      latitude: 12.9716,
-      longitude: 77.5946,
-      createdAt: new Date(Date.now() - 1000),
-    })
-  );
+test("mechanicProfiles: APPROVED mechanic can toggle isOnline and update GPS currentLocation", async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection("mechanicProfiles").doc(MECHANIC_UID).set({
+      userId: MECHANIC_UID,
+      fullName: "Ramesh Sharma",
+      approvalStatus: "APPROVED",
+      isOnline: false,
+      isBusy: false,
+    });
+  });
 
   const m1Db = testEnv.authenticatedContext(MECHANIC_UID).firestore();
-  const res = await assertSucceeds(
-    m1Db.collection("service_requests").where("status", "in", [
-      "PENDING_DISPATCH",
-      "SEARCHING",
-      "SEARCHING_FOR_MECHANICS",
-      "PENDING",
-      "OPEN",
-    ]).get()
+  await assertSucceeds(
+    m1Db.collection("mechanicProfiles").doc(MECHANIC_UID).update({
+      isOnline: true,
+      currentLocation: { lat: 28.4595, lng: 77.0266 },
+    })
   );
-  if (res.empty) {
-    throw new Error("Expected mechanic query to find customer SEARCHING_FOR_MECHANICS request");
-  }
 
-  // Unfiltered list query without open status predicate must fail
-  await assertFails(m1Db.collection("service_requests").get());
+  // Another mechanic cannot update this mechanic's profile
+  const m2Db = testEnv.authenticatedContext(MECHANIC_2_UID).firestore();
+  await assertFails(
+    m2Db.collection("mechanicProfiles").doc(MECHANIC_UID).update({
+      isOnline: false,
+    })
+  );
 });
 
-test("Atomic claim: first mechanic wins across both emergency_requests and service_requests, second mechanic fails", async () => {
+test("serviceRequests & jobOffers: online mechanics read SEARCHING requests, first mechanic claims atomically, second mechanic is blocked", async () => {
   await testEnv.withSecurityRulesDisabled(async (context) => {
-    await context.firestore().collection("service_requests").doc("srv_101").set({
-      userId: CUSTOMER_UID,
-      vehicleType: "TWO_WHEELER",
-      serviceType: "PUNCTURE_TYRE",
+    await context.firestore().collection("jobOffers").doc("offer_1").set({
+      offerId: "offer_1",
+      requestId: "req_1",
+      mechanicId: MECHANIC_UID,
+      status: "PENDING",
+    });
+    await context.firestore().collection("serviceRequests").doc("req_searching").set({
+      requestId: "req_searching",
+      customerId: CUSTOMER_UID,
       status: "SEARCHING",
-      mechanicId: "",
-      createdAt: new Date(Date.now() - 5000),
+      serviceCategory: "FLAT_TYRE",
+      vehicleMakeModel: "Royal Enfield Classic 350",
+      location: { lat: 19.3623573, lng: 72.8576045, landmark: "Yashwant Pride" },
     });
   });
 
   const m1Db = testEnv.authenticatedContext(MECHANIC_UID).firestore();
   const m2Db = testEnv.authenticatedContext(MECHANIC_2_UID).firestore();
 
+  // jobOffers remains mechanic-private and read-only
+  await assertSucceeds(m1Db.collection("jobOffers").doc("offer_1").get());
+  await assertFails(m2Db.collection("jobOffers").doc("offer_1").get());
+  await assertFails(
+    m1Db.collection("jobOffers").doc("offer_1").update({ status: "ACCEPTED" })
+  );
+
+  // Online mechanic can query SEARCHING serviceRequests directly
+  const searchingSnap = await assertSucceeds(
+    m1Db.collection("serviceRequests").where("status", "in", ["SEARCHING", "PENDING_DISPATCH"]).get()
+  );
+  if (searchingSnap.empty) {
+    throw new Error("Expected online mechanic to read SEARCHING serviceRequests");
+  }
+
+  // First mechanic atomically claims the SEARCHING request -> succeeds
   await assertSucceeds(
-    m1Db.collection("service_requests").doc("srv_101").update({
-      status: "ACCEPTED",
+    m1Db.collection("serviceRequests").doc("req_searching").update({
+      status: "ASSIGNED",
       assignedMechanicId: MECHANIC_UID,
       mechanicId: MECHANIC_UID,
-      assignedMechanicName: "Ramesh Sharma",
-      mechanicName: "Ramesh Sharma",
-      assignedMechanicMobile: "+919876543210",
-      mechanicPhone: "+919876543210",
-      updatedAt: new Date(Date.now() - 1000),
     })
   );
 
+  // Second mechanic attempting to steal the now-ASSIGNED request -> blocked
   await assertFails(
-    m2Db.collection("service_requests").doc("srv_101").update({
-      status: "ACCEPTED",
+    m2Db.collection("serviceRequests").doc("req_searching").get()
+  );
+  await assertFails(
+    m2Db.collection("serviceRequests").doc("req_searching").update({
+      status: "ASSIGNED",
       assignedMechanicId: MECHANIC_2_UID,
       mechanicId: MECHANIC_2_UID,
-      assignedMechanicName: "Suresh Kumar",
-      mechanicName: "Suresh Kumar",
-      assignedMechanicMobile: "+919876543211",
-      mechanicPhone: "+919876543211",
-      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // Assigned mechanic can advance job status to EN_ROUTE
+  await assertSucceeds(
+    m1Db.collection("serviceRequests").doc("req_searching").update({
+      status: "EN_ROUTE",
     })
   );
 });
 
-test("Assigned mechanic can advance status to EN_ROUTE and send private chat", async () => {
+test("jobChats & jobMessages: assigned participants can chat while OPEN, blocked when CLOSED or non-participant", async () => {
   await testEnv.withSecurityRulesDisabled(async (context) => {
-    await context.firestore().collection("service_requests").doc("srv_102").set({
+    await context.firestore().collection("jobChats").doc("req_1").set({
+      requestId: "req_1",
       customerId: CUSTOMER_UID,
-      vehicleType: "FOUR_WHEELER",
-      problemCategory: "BATTERY_JUMPSTART",
-      status: "ACCEPTED",
-      assignedMechanicId: MECHANIC_UID,
-      createdAt: new Date(Date.now() - 5000),
+      mechanicId: MECHANIC_UID,
+      status: "OPEN",
+    });
+    await context.firestore().collection("jobChats").doc("req_closed").set({
+      requestId: "req_closed",
+      customerId: CUSTOMER_UID,
+      mechanicId: MECHANIC_UID,
+      status: "CLOSED",
     });
   });
 
@@ -163,109 +261,42 @@ test("Assigned mechanic can advance status to EN_ROUTE and send private chat", a
   const m2Db = testEnv.authenticatedContext(MECHANIC_2_UID).firestore();
 
   await assertSucceeds(
-    m1Db.collection("service_requests").doc("srv_102").update({
-      status: "EN_ROUTE",
-      updatedAt: new Date(Date.now() - 1000),
-    })
-  );
-
-  await assertSucceeds(
-    m1Db.collection("service_requests").doc("srv_102").collection("messages").add({
-      jobId: "srv_102",
+    m1Db.collection("jobChats").doc("req_1").collection("jobMessages").add({
       senderId: MECHANIC_UID,
       senderRole: "MECHANIC",
-      senderName: "Ramesh Sharma",
       text: "On my way!",
-      createdAt: new Date(Date.now() - 1000),
     })
   );
 
-  // Unassigned mechanic cannot read chat
+  // Non-participant cannot read or send messages
   await assertFails(
-    m2Db.collection("service_requests").doc("srv_102").collection("messages").get()
+    m2Db.collection("jobChats").doc("req_1").collection("jobMessages").get()
+  );
+
+  // Sending message to CLOSED chat must fail
+  await assertFails(
+    m1Db.collection("jobChats").doc("req_closed").collection("jobMessages").add({
+      senderId: MECHANIC_UID,
+      senderRole: "MECHANIC",
+      text: "After completion",
+    })
   );
 });
 
-test("Mechanic service area, pincode, and coordinates persist cleanly to mechanics and users for customer visibility", async () => {
+test("deviceTokens: mechanic can register and update own FCM device token", async () => {
   const m1Db = testEnv.authenticatedContext(MECHANIC_UID).firestore();
-  const custDb = testEnv.authenticatedContext(CUSTOMER_UID).firestore();
+  const m2Db = testEnv.authenticatedContext(MECHANIC_2_UID).firestore();
 
-  // Seed legacy mechanic doc lacking createdAt & some fields
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    await context.firestore().collection("mechanics").doc(MECHANIC_UID).set({
+  await assertSucceeds(
+    m1Db.collection("deviceTokens").doc(`${MECHANIC_UID}_android`).set({
       userId: MECHANIC_UID,
-      fullName: "Rajesh",
-      mobileNumber: "",
-      registrationStatus: "APPROVED",
-      isOnline: true,
-    });
-  });
-
-  // Update full location / service area / PIN compatibility fields on mechanics/{uid} & users/{uid}
-  await assertSucceeds(
-    m1Db.collection("mechanics").doc(MECHANIC_UID).set(
-      {
-        userId: MECHANIC_UID,
-        role: "mechanic",
-        baseCityLocality: "Andheri West, Mumbai",
-        locality: "Andheri West, Mumbai",
-        address: "Andheri West, Mumbai",
-        serviceArea: "Andheri West, Mumbai",
-        pincode: "400053",
-        servicePincodes: ["400053", "400058"],
-        serviceRadiusKm: 20,
-        radiusKm: 20,
-        latitude: 19.1363,
-        longitude: 72.8277,
-        lat: 19.1363,
-        lng: 72.8277,
-        shopLat: 19.1363,
-        shopLng: 72.8277,
-        hasCustomLocation: true,
-        isAvailable: true,
-        updatedAt: new Date(Date.now() - 500),
-      },
-      { merge: true }
-    )
+      role: "MECHANIC",
+      platform: "ANDROID",
+      token: "fcm_sample_token",
+    })
   );
 
-  await assertSucceeds(
-    m1Db.collection("users").doc(MECHANIC_UID).set(
-      {
-        userId: MECHANIC_UID,
-        role: "mechanic",
-        userType: "MECHANIC",
-        baseCityLocality: "Andheri West, Mumbai",
-        locality: "Andheri West, Mumbai",
-        address: "Andheri West, Mumbai",
-        serviceArea: "Andheri West, Mumbai",
-        pincode: "400053",
-        servicePincodes: ["400053", "400058"],
-        serviceRadiusKm: 20,
-        radiusKm: 20,
-        latitude: 19.1363,
-        longitude: 72.8277,
-        lat: 19.1363,
-        lng: 72.8277,
-        shopLat: 19.1363,
-        shopLng: 72.8277,
-        isOnline: true,
-        isAvailable: true,
-        updatedAt: new Date(Date.now() - 500),
-      },
-      { merge: true }
-    )
+  await assertFails(
+    m2Db.collection("deviceTokens").doc(`${MECHANIC_UID}_android`).get()
   );
-
-  // Customer app can query updated mechanic area from both mechanics and users
-  const custMechSnap = await assertSucceeds(custDb.collection("mechanics").where("isOnline", "==", true).get());
-  if (custMechSnap.empty || custMechSnap.docs[0].data().pincode !== "400053") {
-    throw new Error("Expected customer query on mechanics to return updated PIN 400053");
-  }
-
-  const custUsersSnap = await assertSucceeds(custDb.collection("users").where("role", "==", "mechanic").get());
-  if (custUsersSnap.empty || custUsersSnap.docs[0].data().pincode !== "400053") {
-    throw new Error("Expected customer query on users to return updated PIN 400053");
-  }
 });
-

@@ -19,15 +19,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.FirestoreProvider
 import com.example.model.ServiceCategory
 import com.example.model.VehicleCapability
+import com.example.ui.auth.getRuntimeFirebaseProjectId
 import com.example.ui.theme.*
 
 @Composable
@@ -278,19 +282,27 @@ fun OnboardingScreen(
 // ----------------------------------------------------
 @Composable
 fun MechanicLoginScreen(
+  isEmailLoading: Boolean = false,
+  externalAuthError: String? = null,
+  onClearExternalError: () -> Unit = {},
   onEmailSignIn: (email: String, password: String) -> Unit = { _, _ -> },
   onEmailCreateAccount: (email: String, password: String) -> Unit = { _, _ -> },
-  onGoogleAuthSuccess: () -> Unit = {},
+  onGoogleAuthSuccess: (isNewUser: Boolean) -> Unit = {},
   onSendOtp: (mobile: String) -> Unit,
   onFastDemoLogin: (persona: String) -> Unit = {},
   onNavigateToRegister: () -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+  val runtimeProjectId = remember(context) { getRuntimeFirebaseProjectId(context) }
+  val runtimeDbId = remember(context) { FirestoreProvider.getDatabaseId(context) }
   var email by remember { mutableStateOf("") }
   var password by remember { mutableStateOf("") }
+  var passwordVisible by remember { mutableStateOf(false) }
   var mobileNumber by remember { mutableStateOf("") }
   var isCreateMode by remember { mutableStateOf(false) }
-  var authError by remember { mutableStateOf<String?>(null) }
+  var localAuthError by remember { mutableStateOf<String?>(null) }
+  val displayedError = localAuthError ?: externalAuthError
   val scrollState = rememberScrollState()
 
   Column(
@@ -341,16 +353,19 @@ fun MechanicLoginScreen(
       )
     )
     Text(
-      text = "Sign in with Google or Email & Password (Spark compatible).",
+      text = "Sign in with Google or Email & Password.",
       style = MaterialTheme.typography.bodyMedium.copy(color = Navy700)
     )
 
     Spacer(modifier = Modifier.height(16.dp))
-    authError?.let { err ->
+    displayedError?.let { err ->
       Surface(
         color = EmergencyRedLight,
         shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(bottom = 12.dp)
+          .testTag("login_auth_error_banner")
       ) {
         Text(
           text = err,
@@ -362,11 +377,15 @@ fun MechanicLoginScreen(
     }
 
     com.example.ui.auth.GoogleSignInButton(
-      onAuthSuccess = {
-        authError = null
-        onGoogleAuthSuccess()
+      onAuthSuccess = { isNewUser ->
+        localAuthError = null
+        onClearExternalError()
+        onGoogleAuthSuccess(isNewUser)
       },
-      onAuthError = { authError = it }
+      onAuthError = {
+        onClearExternalError()
+        localAuthError = it
+      }
     )
 
     Spacer(modifier = Modifier.height(16.dp))
@@ -385,22 +404,41 @@ fun MechanicLoginScreen(
     Spacer(modifier = Modifier.height(14.dp))
     OutlinedTextField(
       value = email,
-      onValueChange = { email = it },
+      onValueChange = {
+        email = it
+        localAuthError = null
+        onClearExternalError()
+      },
       label = { Text("Workshop Email") },
       leadingIcon = { Icon(Icons.Outlined.Email, contentDescription = null, tint = Navy700) },
       keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
       singleLine = true,
+      enabled = !isEmailLoading,
       shape = RoundedCornerShape(10.dp),
       modifier = Modifier.fillMaxWidth().testTag("login_email_input")
     )
     Spacer(modifier = Modifier.height(10.dp))
     OutlinedTextField(
       value = password,
-      onValueChange = { password = it },
+      onValueChange = {
+        password = it
+        localAuthError = null
+        onClearExternalError()
+      },
       label = { Text("Password (min 6 chars)") },
       leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null, tint = Navy700) },
-      visualTransformation = PasswordVisualTransformation(),
+      trailingIcon = {
+        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+          Icon(
+            imageVector = if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+            contentDescription = if (passwordVisible) "Hide password" else "Show password",
+            tint = Navy700
+          )
+        }
+      },
+      visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
       singleLine = true,
+      enabled = !isEmailLoading,
       shape = RoundedCornerShape(10.dp),
       modifier = Modifier.fillMaxWidth().testTag("login_password_input")
     )
@@ -408,15 +446,20 @@ fun MechanicLoginScreen(
     Spacer(modifier = Modifier.height(14.dp))
     Button(
       onClick = {
-        authError = null
-        if (email.isBlank() || password.length < 6) {
-          authError = "Enter a valid email and at least 6 characters for password."
+        localAuthError = null
+        onClearExternalError()
+        val trimmedEmail = email.trim()
+        if (trimmedEmail.isBlank() || !trimmedEmail.contains("@")) {
+          localAuthError = "Please enter a valid email address."
+        } else if (password.length < 6) {
+          localAuthError = "Password must be at least 6 characters."
         } else if (isCreateMode) {
-          onEmailCreateAccount(email, password)
+          onEmailCreateAccount(trimmedEmail, password)
         } else {
-          onEmailSignIn(email, password)
+          onEmailSignIn(trimmedEmail, password)
         }
       },
+      enabled = !isEmailLoading,
       colors = ButtonDefaults.buttonColors(containerColor = Navy900),
       shape = RoundedCornerShape(10.dp),
       modifier = Modifier
@@ -424,16 +467,29 @@ fun MechanicLoginScreen(
         .height(52.dp)
         .testTag("login_email_submit_btn")
     ) {
-      Text(
-        text = if (isCreateMode) "Create Account & Continue" else "Sign In with Email",
-        fontWeight = FontWeight.Bold,
-        fontSize = 15.sp
-      )
+      if (isEmailLoading) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(22.dp),
+          color = SurfaceWhite,
+          strokeWidth = 2.dp
+        )
+      } else {
+        Text(
+          text = if (isCreateMode) "Create Account & Continue" else "Sign In with Email",
+          fontWeight = FontWeight.Bold,
+          fontSize = 15.sp
+        )
+      }
     }
 
     TextButton(
-      onClick = { isCreateMode = !isCreateMode },
-      modifier = Modifier.align(Alignment.CenterHorizontally)
+      onClick = {
+        isCreateMode = !isCreateMode
+        localAuthError = null
+        onClearExternalError()
+      },
+      enabled = !isEmailLoading,
+      modifier = Modifier.align(Alignment.CenterHorizontally).testTag("toggle_email_auth_mode_btn")
     ) {
       Text(
         text = if (isCreateMode) "Already have an account? Sign In" else "New partner? Create Email Account",
@@ -484,6 +540,16 @@ fun MechanicLoginScreen(
         Text("Register Workshop Profile", color = EmergencyRed, fontWeight = FontWeight.Bold)
       }
     }
+
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(
+      text = "Firebase project: $runtimeProjectId · DB: $runtimeDbId",
+      style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp),
+      textAlign = TextAlign.Center,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("firebase_project_id_caption")
+    )
   }
 }
 
@@ -610,6 +676,8 @@ fun OtpVerificationScreen(
 // ----------------------------------------------------
 @Composable
 fun MechanicRegistrationScreen(
+  initialEmail: String = "",
+  initialFullName: String = "",
   onRegisterSubmit: (
     name: String,
     mobile: String,
@@ -625,14 +693,16 @@ fun MechanicRegistrationScreen(
   onNavigateBack: () -> Unit,
   modifier: Modifier = Modifier
 ) {
-  var fullName by remember { mutableStateOf("Rajesh Kumar") }
-  var mobile by remember { mutableStateOf("9876543210") }
-  var email by remember { mutableStateOf("rajesh.kumar@gmail.com") }
-  var workshopName by remember { mutableStateOf("Sri Balaji Mobile Auto Works") }
+  var fullName by remember(initialFullName) {
+    mutableStateOf(initialFullName.takeIf { it.isNotBlank() && it != "FixMechanic Partner" } ?: "")
+  }
+  var mobile by remember { mutableStateOf("") }
+  var email by remember(initialEmail) { mutableStateOf(initialEmail) }
+  var workshopName by remember { mutableStateOf("") }
   var capability by remember { mutableStateOf(VehicleCapability.BOTH) }
-  var cityLocality by remember { mutableStateOf("Indiranagar, Bengaluru") }
-  var experienceYears by remember { mutableStateOf("8") }
-  var verificationId by remember { mutableStateOf("DL-KA03-2016-99214") }
+  var cityLocality by remember { mutableStateOf("Gurugram Sector 29") }
+  var experienceYears by remember { mutableStateOf("5") }
+  var verificationId by remember { mutableStateOf("") }
 
   var selectedServices by remember {
     mutableStateOf(

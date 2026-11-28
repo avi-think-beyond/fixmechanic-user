@@ -39,18 +39,25 @@ interface MechanicProfileRepository {
     capability: VehicleCapability,
     cityLocality: String,
     radiusKm: Int,
-    pincode: String = "560038",
-    latitude: Double = 12.9716,
-    longitude: Double = 77.5946
+    pincode: String = "122002",
+    latitude: Double = 28.4595,
+    longitude: Double = 77.0266
   ): Result<Unit>
   suspend fun updateServiceAreaAndPincode(
     cityLocality: String,
     pincode: String,
     radiusKm: Int,
     servicePincodes: List<String>,
-    latitude: Double = 12.9716,
-    longitude: Double = 77.5946
+    latitude: Double = 28.4595,
+    longitude: Double = 77.0266
   ): Result<Unit>
+  suspend fun syncInitialDeviceLocation(
+    latitude: Double,
+    longitude: Double,
+    locality: String? = null,
+    pincode: String? = null,
+    forceRefresh: Boolean = false
+  )
   suspend fun updateVehicleCapability(capability: VehicleCapability): Result<Unit>
   suspend fun updateServiceCategories(categories: Set<ServiceCategory>): Result<Unit>
   suspend fun updateServiceRadius(radiusKm: Int): Result<Unit>

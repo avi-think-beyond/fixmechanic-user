@@ -768,7 +768,8 @@ fun EditProfileScreen(
   onNavigateBack: () -> Unit,
   modifier: Modifier = Modifier,
   isAuthenticated: Boolean = true,
-  isSaving: Boolean = false
+  isSaving: Boolean = false,
+  isNewUserSetup: Boolean = false
 ) {
   var hasLocalEdits by remember(profile.id) { mutableStateOf(false) }
   var fullName by remember(profile.id) { mutableStateOf(profile.fullName) }
@@ -814,9 +815,28 @@ fun EditProfileScreen(
         }
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-          text = "Edit Profile & Capabilities",
+          text = if (isNewUserSetup) "Complete Your Mechanic Profile" else "Edit Profile & Capabilities",
           style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Navy900)
         )
+      }
+
+      if (isNewUserSetup && isAuthenticated) {
+        Spacer(modifier = Modifier.height(12.dp))
+        Surface(
+          color = OnlineGreenSoft,
+          shape = RoundedCornerShape(10.dp),
+          border = androidx.compose.foundation.BorderStroke(1.dp, OnlineGreen),
+          modifier = Modifier.fillMaxWidth().testTag("new_user_profile_setup_banner")
+        ) {
+          Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.VerifiedUser, contentDescription = null, tint = OnlineGreenDark, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = "Welcome! You are signed in. Update your workshop details, PIN code, and map location below to continue to Home.",
+              style = MaterialTheme.typography.bodySmall.copy(color = Navy900, fontWeight = FontWeight.Medium)
+            )
+          }
+        }
       }
 
       if (!isAuthenticated) {
@@ -968,7 +988,7 @@ fun EditProfileScreen(
         Spacer(modifier = Modifier.width(8.dp))
         Text("Saving to Firebase...", fontWeight = FontWeight.Bold)
       } else {
-        Text("Save Changes", fontWeight = FontWeight.Bold)
+        Text(if (isNewUserSetup) "Save Profile & Continue to Home" else "Save Changes", fontWeight = FontWeight.Bold)
       }
     }
   }

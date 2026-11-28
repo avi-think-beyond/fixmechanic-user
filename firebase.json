@@ -6,6 +6,7 @@
     ]
   },
   "firestore": {
+    "database": "ai-studio-android-e98a79eb-e2fe-4b16-a049-c442e6f88e9e",
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },

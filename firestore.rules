@@ -9,33 +9,43 @@ service cloud.firestore {
     function hasRoleInUsersDoc(roleName) {
       return isAuthenticated() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        'role' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == roleName;
     }
 
     function isAdmin() {
       return isAuthenticated() && (
-        request.auth.token.role == 'ADMIN' ||
-        request.auth.token.admin == true ||
+        ('role' in request.auth.token && request.auth.token.role == 'ADMIN') ||
+        ('admin' in request.auth.token && request.auth.token.admin == true) ||
         hasRoleInUsersDoc('ADMIN')
       );
     }
 
     function isMechanic() {
       return isAuthenticated() && (
-        request.auth.token.role == 'MECHANIC' ||
+        ('role' in request.auth.token && request.auth.token.role == 'MECHANIC') ||
         hasRoleInUsersDoc('MECHANIC')
       );
     }
 
     function isCustomer() {
       return isAuthenticated() && (
-        request.auth.token.role == 'CUSTOMER' ||
+        ('role' in request.auth.token && request.auth.token.role == 'CUSTOMER') ||
         hasRoleInUsersDoc('CUSTOMER')
       );
     }
 
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isOpenDispatchStatus(status) {
+      return status in ['SEARCHING', 'PENDING_DISPATCH', 'SEARCHING_FOR_MECHANICS', 'PENDING', 'OPEN'];
+    }
+
+    function isUnassignedRequest(data) {
+      return (!('assignedMechanicId' in data) || data.assignedMechanicId == null || data.assignedMechanicId == '') &&
+        (!('mechanicId' in data) || data.mechanicId == null || data.mechanicId == '');
     }
 
     // Default: Strictly deny everything
@@ -49,6 +59,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId) &&
+        'role' in request.resource.data &&
         (request.resource.data.role == 'CUSTOMER' || request.resource.data.role == 'MECHANIC');
       allow update: if (isOwner(userId) &&
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'disabled'])) ||
@@ -69,6 +80,7 @@ service cloud.firestore {
     match /mechanicProfiles/{mechanicId} {
       allow read: if isAuthenticated();
       allow create: if isOwner(mechanicId) &&
+        'approvalStatus' in request.resource.data &&
         request.resource.data.approvalStatus == 'PENDING' &&
         (!('isOnline' in request.resource.data) || request.resource.data.isOnline == false) &&
         (!('isBusy' in request.resource.data) || request.resource.data.isBusy == false);
@@ -80,15 +92,11 @@ service cloud.firestore {
           'verifiedAt',
           'verifiedBy',
           'ratingAverage',
-          'ratingCount',
-          'isBusy',
-          'activeJobId',
-          'totalCompletedJobs',
-          'todayEarningsInr'
+          'ratingCount'
         ]) &&
         (!('isOnline' in request.resource.data) ||
           request.resource.data.isOnline == false ||
-          resource.data.approvalStatus == 'APPROVED')) ||
+          ('approvalStatus' in resource.data && resource.data.approvalStatus == 'APPROVED'))) ||
         isAdmin();
       allow delete: if isAdmin();
     }
@@ -105,21 +113,53 @@ service cloud.firestore {
     }
 
     // 5. serviceRequests
-    // Privileged mutations (creation, dispatch, assignment, status transitions) MUST go through Backend API
+    // Online mechanics can listen in real time for open SEARCHING requests and atomically claim unassigned ones.
+    // Once assigned, only the assigned mechanic, customer, or admin can read/update.
     match /serviceRequests/{requestId} {
       allow read: if isAuthenticated() && (
-        resource.data.customerId == request.auth.uid ||
-        resource.data.assignedMechanicId == request.auth.uid ||
+        ('customerId' in resource.data && resource.data.customerId == request.auth.uid) ||
+        ('userId' in resource.data && resource.data.userId == request.auth.uid) ||
+        ('assignedMechanicId' in resource.data && resource.data.assignedMechanicId == request.auth.uid) ||
+        ('mechanicId' in resource.data && resource.data.mechanicId == request.auth.uid) ||
+        ('status' in resource.data && isOpenDispatchStatus(resource.data.status)) ||
         isAdmin()
       );
-      allow write: if isAdmin();
+      allow create: if isAuthenticated() && (
+        ('customerId' in request.resource.data && request.resource.data.customerId == request.auth.uid) ||
+        ('userId' in request.resource.data && request.resource.data.userId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow update: if isAuthenticated() && (
+        // Case A: First-come atomic claim of an open, unassigned request
+        (
+          'status' in resource.data &&
+          isOpenDispatchStatus(resource.data.status) &&
+          isUnassignedRequest(resource.data) &&
+          'assignedMechanicId' in request.resource.data &&
+          request.resource.data.assignedMechanicId == request.auth.uid &&
+          'status' in request.resource.data &&
+          request.resource.data.status in ['ASSIGNED', 'ACCEPTED']
+        ) ||
+        // Case B: Assigned mechanic advancing job status / completion
+        (
+          ('assignedMechanicId' in resource.data && resource.data.assignedMechanicId == request.auth.uid) ||
+          ('mechanicId' in resource.data && resource.data.mechanicId == request.auth.uid)
+        ) ||
+        // Case C: Customer updating/cancelling their own request
+        (
+          ('customerId' in resource.data && resource.data.customerId == request.auth.uid) ||
+          ('userId' in resource.data && resource.data.userId == request.auth.uid)
+        ) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
     }
 
     // 6. jobOffers
     // Mechanics can ONLY read offers targeted specifically to their mechanicId
     match /jobOffers/{offerId} {
       allow read: if isAuthenticated() && (
-        resource.data.mechanicId == request.auth.uid ||
+        ('mechanicId' in resource.data && resource.data.mechanicId == request.auth.uid) ||
         isAdmin()
       );
       allow write: if isAdmin();
@@ -128,8 +168,8 @@ service cloud.firestore {
     // 7. jobAssignments
     match /jobAssignments/{requestId} {
       allow read: if isAuthenticated() && (
-        resource.data.customerId == request.auth.uid ||
-        resource.data.mechanicId == request.auth.uid ||
+        ('customerId' in resource.data && resource.data.customerId == request.auth.uid) ||
+        ('mechanicId' in resource.data && resource.data.mechanicId == request.auth.uid) ||
         isAdmin()
       );
       allow write: if isAdmin();
@@ -138,7 +178,7 @@ service cloud.firestore {
     // 8. jobStatusEvents
     match /jobStatusEvents/{eventId} {
       allow read: if isAuthenticated() && (
-        resource.data.actorId == request.auth.uid ||
+        ('actorId' in resource.data && resource.data.actorId == request.auth.uid) ||
         isAdmin()
       );
       allow write: if isAdmin();
@@ -147,11 +187,21 @@ service cloud.firestore {
     // 9. jobChats and jobMessages
     match /jobChats/{requestId} {
       allow read: if isAuthenticated() && (
-        resource.data.customerId == request.auth.uid ||
-        resource.data.mechanicId == request.auth.uid ||
+        ('customerId' in resource.data && resource.data.customerId == request.auth.uid) ||
+        ('mechanicId' in resource.data && resource.data.mechanicId == request.auth.uid) ||
         isAdmin()
       );
-      allow write: if isAdmin();
+      allow create: if isAuthenticated() && (
+        ('mechanicId' in request.resource.data && request.resource.data.mechanicId == request.auth.uid) ||
+        ('customerId' in request.resource.data && request.resource.data.customerId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow update: if isAuthenticated() && (
+        ('mechanicId' in resource.data && resource.data.mechanicId == request.auth.uid) ||
+        ('customerId' in resource.data && resource.data.customerId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
 
       match /jobMessages/{messageId} {
         allow read: if isAuthenticated() && (
@@ -177,9 +227,11 @@ service cloud.firestore {
 
     // 11. deviceTokens
     match /deviceTokens/{tokenId} {
-      allow read: if isOwner(resource.data.userId) || isAdmin();
-      allow create, update: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow delete: if isOwner(resource.data.userId) || isAdmin();
+      allow read: if ('userId' in resource.data && isOwner(resource.data.userId)) || isAdmin();
+      allow create, update: if isAuthenticated() &&
+        'userId' in request.resource.data &&
+        request.resource.data.userId == request.auth.uid;
+      allow delete: if ('userId' in resource.data && isOwner(resource.data.userId)) || isAdmin();
     }
 
     // 12. adminAuditLogs

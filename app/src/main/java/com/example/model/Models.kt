@@ -173,6 +173,11 @@ data class MechanicProfile(
   val supportedServices: Set<ServiceCategory>,
   val serviceRadiusKm: Int,
   val baseCityLocality: String,
+  val pincode: String = "122002",
+  val servicePincodes: List<String> = listOf("122002"),
+  val latitude: Double = 28.4595,
+  val longitude: Double = 77.0266,
+  val hasCustomLocation: Boolean = false,
   val experienceYears: Int,
   val verificationIdNumber: String,
   val registrationStatus: RegistrationStatus,
@@ -203,7 +208,8 @@ data class JobOffer(
   val totalCountdownSeconds: Int = 45,
   val remainingCountdownSeconds: Int = 45,
   val expiresAtEpochMs: Long = System.currentTimeMillis() + 45000L,
-  val simulateTakenByOther: Boolean = false
+  val simulateTakenByOther: Boolean = false,
+  val isDirectServiceRequest: Boolean = false
 )
 
 data class ActiveJob(

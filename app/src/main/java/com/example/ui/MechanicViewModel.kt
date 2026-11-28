@@ -15,11 +15,18 @@ class MechanicViewModel(
 
   val profile: StateFlow<MechanicProfile> = repository.profile
   val currentOffer: StateFlow<JobOffer?> = repository.currentOffer
+  val availableOffers: StateFlow<List<JobOffer>> = repository.availableOffers
   val activeJob: StateFlow<ActiveJob?> = repository.activeJob
   val completedHistory: StateFlow<List<CompletedJobRecord>> = repository.completedHistory
   val todayEarningsInr: StateFlow<Double> = repository.todayEarningsInr
   val isAuthenticated: StateFlow<Boolean> = repository.isAuthenticated
   val isSimulateCompetitorSteal: StateFlow<Boolean> = repository.isSimulateCompetitorSteal
+
+  private val _isSavingProfile = MutableStateFlow(false)
+  val isSavingProfile: StateFlow<Boolean> = _isSavingProfile.asStateFlow()
+
+  private val _isSyncingDeviceLocation = MutableStateFlow(false)
+  val isSyncingDeviceLocation: StateFlow<Boolean> = _isSyncingDeviceLocation.asStateFlow()
 
   private val _lastAcceptanceResult = MutableStateFlow<JobAcceptanceResult?>(null)
   val lastAcceptanceResult: StateFlow<JobAcceptanceResult?> = _lastAcceptanceResult.asStateFlow()
@@ -60,30 +67,73 @@ class MechanicViewModel(
     }
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-  fun signInWithEmail(email: String, password: String, onResult: (Boolean, String) -> Unit) {
+  private val _isEmailAuthLoading = MutableStateFlow(false)
+  val isEmailAuthLoading: StateFlow<Boolean> = _isEmailAuthLoading.asStateFlow()
+
+  fun handlePostSignIn(
+    context: Context,
+    isFirebaseNewUser: Boolean = false,
+    onResolved: (isNewMechanic: Boolean) -> Unit
+  ) {
     viewModelScope.launch {
-      val res = repository.signInWithEmail(email, password)
-      res.onSuccess {
-        _statusBannerMessage.value = "Signed in as ${it.email}"
-        onResult(true, "Signed in successfully")
-      }.onFailure { err ->
-        val msg = err.localizedMessage ?: "Email sign-in failed"
-        _statusBannerMessage.value = msg
-        onResult(false, msg)
+      val isNewMechanic = repository.completeSignInAndCheckIsNewMechanic(isFirebaseNewUser)
+      registerFcmToken()
+      syncGpsLocation(context)
+      if (isNewMechanic) {
+        _statusBannerMessage.value = "Welcome! Please complete your mechanic profile details."
+      } else {
+        _statusBannerMessage.value = "Welcome back, ${profile.value.fullName.ifBlank { "Partner" }}!"
+      }
+      onResolved(isNewMechanic)
+    }
+  }
+
+  fun signInWithEmail(
+    context: Context,
+    email: String,
+    password: String,
+    onResult: (Boolean, String) -> Unit
+  ) {
+    if (_isEmailAuthLoading.value) return
+    viewModelScope.launch {
+      _isEmailAuthLoading.value = true
+      try {
+        val res = repository.signInWithEmail(email, password)
+        res.onSuccess {
+          _statusBannerMessage.value = "Signed in as ${it.email}"
+          onResult(true, "Signed in successfully")
+        }.onFailure { err ->
+          val msg = com.example.ui.auth.formatAuthErrorMessage(context, err)
+          _statusBannerMessage.value = msg
+          onResult(false, msg)
+        }
+      } finally {
+        _isEmailAuthLoading.value = false
       }
     }
   }
 
-  fun registerWithEmail(email: String, password: String, onResult: (Boolean, String) -> Unit) {
+  fun registerWithEmail(
+    context: Context,
+    email: String,
+    password: String,
+    onResult: (Boolean, String) -> Unit
+  ) {
+    if (_isEmailAuthLoading.value) return
     viewModelScope.launch {
-      val res = repository.registerWithEmail(email, password)
-      res.onSuccess {
-        _statusBannerMessage.value = "Account created! Complete partner workshop registration."
-        onResult(true, "Account created")
-      }.onFailure { err ->
-        val msg = err.localizedMessage ?: "Account creation failed"
-        _statusBannerMessage.value = msg
-        onResult(false, msg)
+      _isEmailAuthLoading.value = true
+      try {
+        val res = repository.registerWithEmail(email, password)
+        res.onSuccess {
+          _statusBannerMessage.value = "Account created! Complete your profile details below."
+          onResult(true, "Account created")
+        }.onFailure { err ->
+          val msg = com.example.ui.auth.formatAuthErrorMessage(context, err)
+          _statusBannerMessage.value = msg
+          onResult(false, msg)
+        }
+      } finally {
+        _isEmailAuthLoading.value = false
       }
     }
   }
@@ -187,17 +237,78 @@ class MechanicViewModel(
     }
   }
 
+  fun syncInitialDeviceLocation(context: Context, forceRefresh: Boolean = false) {
+    if (!forceRefresh && profile.value.hasCustomLocation) return
+    viewModelScope.launch {
+      _isSyncingDeviceLocation.value = true
+      try {
+        val detected = com.example.ui.components.resolveCurrentDeviceLocationWithAddress(context)
+        if (detected != null) {
+          val (lat, lng, addr) = detected
+          repository.syncInitialDeviceLocation(
+            latitude = lat,
+            longitude = lng,
+            locality = addr?.locality,
+            pincode = addr?.pincode,
+            forceRefresh = forceRefresh
+          )
+          if (forceRefresh) {
+            _statusBannerMessage.value = "Updated to mobile GPS location${addr?.locality?.let { ": $it" } ?: ""}"
+          }
+        } else if (forceRefresh) {
+          _statusBannerMessage.value = "Could not detect GPS fix. Check Location Services and permissions."
+        }
+      } finally {
+        _isSyncingDeviceLocation.value = false
+      }
+    }
+  }
+
   fun updateProfileDetails(
     name: String,
     workshop: String,
     capability: VehicleCapability,
     city: String,
-    radius: Int
+    radius: Int,
+    pincode: String = profile.value.pincode,
+    latitude: Double = profile.value.latitude,
+    longitude: Double = profile.value.longitude,
+    onResult: ((Boolean) -> Unit)? = null
   ) {
     viewModelScope.launch {
-      repository.updateProfileDetails(name, workshop, capability, city, radius)
-        .onSuccess { _statusBannerMessage.value = "Profile updated successfully." }
-        .onFailure { _statusBannerMessage.value = "Update failed: ${it.localizedMessage}" }
+      _isSavingProfile.value = true
+      val res = repository.updateProfileDetails(name, workshop, capability, city, radius, pincode, latitude, longitude)
+      _isSavingProfile.value = false
+      res.onSuccess {
+        _statusBannerMessage.value = "Profile and workshop location saved to Firebase."
+        onResult?.invoke(true)
+      }.onFailure { err ->
+        _statusBannerMessage.value = "Update failed: ${err.localizedMessage}"
+        onResult?.invoke(false)
+      }
+    }
+  }
+
+  fun updateServiceAreaAndPincode(
+    cityLocality: String,
+    pincode: String,
+    radiusKm: Int,
+    servicePincodes: List<String>,
+    latitude: Double = profile.value.latitude,
+    longitude: Double = profile.value.longitude,
+    onResult: ((Boolean) -> Unit)? = null
+  ) {
+    viewModelScope.launch {
+      _isSavingProfile.value = true
+      val res = repository.updateServiceAreaAndPincode(cityLocality, pincode, radiusKm, servicePincodes, latitude, longitude)
+      _isSavingProfile.value = false
+      res.onSuccess {
+        _statusBannerMessage.value = "Service area saved to Firebase: $cityLocality ($pincode), $radiusKm km"
+        onResult?.invoke(true)
+      }.onFailure { err ->
+        _statusBannerMessage.value = "Save failed: ${err.localizedMessage}"
+        onResult?.invoke(false)
+      }
     }
   }
 

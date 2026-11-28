@@ -12,6 +12,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.example.data.FixMechanicRepositoryImpl
@@ -30,7 +31,7 @@ class MainActivity : ComponentActivity() {
     com.example.ui.auth.attemptAutoSignIn(
       context = this,
       credentialManager = credentialManager,
-      onAuthSuccess = {
+      onAuthSuccess = { _ ->
         viewModel.registerFcmToken()
         viewModel.syncGpsLocation(this)
       },
@@ -80,6 +81,7 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
   val profile by viewModel.profile.collectAsStateWithLifecycle()
   val activeJob by viewModel.activeJob.collectAsStateWithLifecycle()
   val currentOffer by viewModel.currentOffer.collectAsStateWithLifecycle()
+  val availableOffers by viewModel.availableOffers.collectAsStateWithLifecycle()
   val completedHistory by viewModel.completedHistory.collectAsStateWithLifecycle()
   val todayEarningsInr by viewModel.todayEarningsInr.collectAsStateWithLifecycle()
   val isCompetitorModeOn by viewModel.isSimulateCompetitorSteal.collectAsStateWithLifecycle()
@@ -89,26 +91,79 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
   val cannedResponses by viewModel.cannedResponses.collectAsStateWithLifecycle()
   val isChatAllowed by viewModel.isChatAllowed.collectAsStateWithLifecycle()
   val statusBanner by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
+  val isSavingProfile by viewModel.isSavingProfile.collectAsStateWithLifecycle()
+  val isSyncingDeviceLocation by viewModel.isSyncingDeviceLocation.collectAsStateWithLifecycle()
+  val isEmailAuthLoading by viewModel.isEmailAuthLoading.collectAsStateWithLifecycle()
   val isLocationPermissionGranted by viewModel.isLocationPermissionGranted.collectAsStateWithLifecycle()
   val isGpsEnabled by viewModel.isGpsEnabled.collectAsStateWithLifecycle()
+  var loginAuthError by remember { mutableStateOf<String?>(null) }
+  var isNewUserProfileSetup by remember { mutableStateOf(false) }
+  var isRoutingPostSignIn by remember { mutableStateOf(false) }
+  val coroutineScope = rememberCoroutineScope()
+  val credentialManager = remember(context) { androidx.credentials.CredentialManager.create(context) }
 
-  LaunchedEffect(isAuthenticated) {
-    if (isAuthenticated) {
-      viewModel.registerFcmToken()
-      viewModel.syncGpsLocation(context)
+  fun routeAfterSignIn(isFirebaseNewUser: Boolean = false) {
+    if (isRoutingPostSignIn) return
+    isRoutingPostSignIn = true
+    viewModel.handlePostSignIn(context, isFirebaseNewUser) { isNewMechanic ->
+      isRoutingPostSignIn = false
+      isNewUserProfileSetup = isNewMechanic
+      screenStack = if (isNewMechanic) {
+        listOf(MechanicScreen.DASHBOARD, MechanicScreen.EDIT_PROFILE)
+      } else {
+        listOf(MechanicScreen.DASHBOARD)
+      }
     }
   }
 
-  Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+  LaunchedEffect(Unit) {
+    viewModel.checkDevicePermissions(context)
+  }
+
+  LaunchedEffect(isAuthenticated, currentScreen) {
+    if (isAuthenticated) {
+      viewModel.registerFcmToken()
+      viewModel.syncGpsLocation(context)
+      if (currentScreen == MechanicScreen.LOGIN || currentScreen == MechanicScreen.ONBOARDING) {
+        routeAfterSignIn(false)
+      }
+    } else {
+      isNewUserProfileSetup = false
+    }
+  }
+
+  LaunchedEffect(isAuthenticated, isLocationPermissionGranted, profile.hasCustomLocation) {
+    if (isLocationPermissionGranted && !profile.hasCustomLocation) {
+      viewModel.syncInitialDeviceLocation(context)
+    }
+  }
+
+  Scaffold(
+    snackbarHost = {
+      if (statusBanner != null && currentScreen != MechanicScreen.DASHBOARD) {
+        androidx.compose.material3.Snackbar(
+          modifier = Modifier.padding(12.dp),
+          action = {
+            androidx.compose.material3.TextButton(onClick = { viewModel.dismissBanner() }) {
+              androidx.compose.material3.Text("OK")
+            }
+          }
+        ) {
+          androidx.compose.material3.Text(statusBanner!!)
+        }
+      }
+    },
+    modifier = Modifier.fillMaxSize()
+  ) { innerPadding ->
     Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
       when (currentScreen) {
         MechanicScreen.SPLASH -> {
           SplashScreen(
             onNavigateNext = {
-              screenStack = if (isAuthenticated) {
-                listOf(MechanicScreen.DASHBOARD)
+              if (isAuthenticated) {
+                routeAfterSignIn(false)
               } else {
-                listOf(MechanicScreen.ONBOARDING)
+                screenStack = listOf(MechanicScreen.ONBOARDING)
               }
             }
           )
@@ -116,38 +171,56 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
         MechanicScreen.ONBOARDING -> {
           OnboardingScreen(
             onCompleteOnboarding = {
-              screenStack = if (isAuthenticated) {
-                listOf(MechanicScreen.REGISTRATION)
+              if (isAuthenticated) {
+                routeAfterSignIn(false)
               } else {
-                listOf(MechanicScreen.LOGIN)
+                screenStack = listOf(MechanicScreen.LOGIN)
               }
             },
             onGoToLogin = {
-              navigateTo(MechanicScreen.LOGIN)
+              if (isAuthenticated) {
+                routeAfterSignIn(false)
+              } else {
+                navigateTo(MechanicScreen.LOGIN)
+              }
             }
           )
         }
         MechanicScreen.LOGIN -> {
           MechanicLoginScreen(
+            isEmailLoading = isEmailAuthLoading,
+            externalAuthError = loginAuthError,
+            onClearExternalError = { loginAuthError = null },
             onEmailSignIn = { email, pass ->
-              viewModel.signInWithEmail(email, pass) { success, _ ->
-                if (success) popTo(MechanicScreen.DASHBOARD)
-              }
-            },
-            onEmailCreateAccount = { email, pass ->
-              viewModel.registerWithEmail(email, pass) { success, _ ->
+              loginAuthError = null
+              viewModel.signInWithEmail(context, email, pass) { success, message ->
                 if (success) {
-                  screenStack = listOf(MechanicScreen.DASHBOARD, MechanicScreen.REGISTRATION)
+                  loginAuthError = null
+                  routeAfterSignIn(isFirebaseNewUser = false)
+                } else {
+                  loginAuthError = message
                 }
               }
             },
-            onGoogleAuthSuccess = {
-              popTo(MechanicScreen.DASHBOARD)
+            onEmailCreateAccount = { email, pass ->
+              loginAuthError = null
+              viewModel.registerWithEmail(context, email, pass) { success, message ->
+                if (success) {
+                  loginAuthError = null
+                  routeAfterSignIn(isFirebaseNewUser = true)
+                } else {
+                  loginAuthError = message
+                }
+              }
+            },
+            onGoogleAuthSuccess = { isNewUser ->
+              loginAuthError = null
+              routeAfterSignIn(isFirebaseNewUser = isNewUser)
             },
             onSendOtp = { mobile ->
               pendingMobileForOtp = mobile
-              viewModel.sendOtp(mobile) { success, _ ->
-                if (success) navigateTo(MechanicScreen.OTP_VERIFY)
+              viewModel.sendOtp(mobile) { success, message ->
+                if (success) navigateTo(MechanicScreen.OTP_VERIFY) else loginAuthError = message
               }
             },
             onNavigateToRegister = {
@@ -171,6 +244,8 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
         }
         MechanicScreen.REGISTRATION -> {
           MechanicRegistrationScreen(
+            initialEmail = profile.email,
+            initialFullName = profile.fullName,
             onRegisterSubmit = { name, mobile, email, workshop, cap, srv, rad, city, exp, idNo ->
               viewModel.register(name, mobile, email, workshop, cap, srv, rad, city, exp, idNo)
               popTo(MechanicScreen.DASHBOARD)
@@ -201,7 +276,11 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
             onToggleCompetitorMode = { enabled -> viewModel.toggleCompetitorSteal(enabled) },
             onSimulateJobOffer = { scenarioIdx -> viewModel.triggerSimulatedOffer(scenarioIdx) },
             onDismissBanner = { viewModel.dismissBanner() },
-            onSyncLocation = { ctx -> viewModel.syncGpsLocation(ctx) }
+            onSyncLocation = { ctx -> viewModel.syncGpsLocation(ctx) },
+            availableOffers = availableOffers,
+            isAcceptingOffer = isAcceptingOffer,
+            onAcceptOffer = { offerId -> viewModel.acceptJobOffer(offerId) },
+            onRejectOffer = { offerId -> viewModel.rejectJobOffer(offerId) }
           )
         }
         MechanicScreen.VERIFICATION -> {
@@ -226,29 +305,62 @@ fun MechanicAppRoot(viewModel: MechanicViewModel) {
           ServiceAreaRadiusScreen(
             currentRadiusKm = profile.serviceRadiusKm,
             baseLocality = profile.baseCityLocality,
-            onUpdateRadius = { viewModel.updateServiceRadius(it) },
+            currentPincode = profile.pincode,
+            servicePincodes = profile.servicePincodes,
+            initialLatitude = profile.latitude,
+            initialLongitude = profile.longitude,
+            hasCustomLocation = profile.hasCustomLocation,
+            profileId = profile.id,
+            isAuthenticated = isAuthenticated,
+            isSaving = isSavingProfile,
+            onUpdateServiceArea = { locality, pin, radius, pinList, lat, lng ->
+              viewModel.updateServiceAreaAndPincode(locality, pin, radius, pinList, lat, lng) { success ->
+                if (success) navigateBack()
+              }
+            },
             onNavigateBack = { navigateBack() }
           )
         }
         MechanicScreen.EDIT_PROFILE -> {
           EditProfileScreen(
             profile = profile,
-            onSaveProfile = { name, workshop, cap, city, rad ->
-              viewModel.updateProfileDetails(name, workshop, cap, city, rad)
+            isAuthenticated = isAuthenticated,
+            isSaving = isSavingProfile,
+            isNewUserSetup = isNewUserProfileSetup,
+            onSaveProfile = { name, workshop, cap, city, rad, pin, lat, lng ->
+              viewModel.updateProfileDetails(name, workshop, cap, city, rad, pin, lat, lng) { success ->
+                if (success) {
+                  isNewUserProfileSetup = false
+                  navigateBack()
+                }
+              }
             },
-            onNavigateBack = { navigateBack() }
+            onNavigateBack = {
+              isNewUserProfileSetup = false
+              navigateBack()
+            }
           )
         }
         MechanicScreen.PROFILE_SUPPORT -> {
           ProfileAndSupportScreen(
             profile = profile,
+            isAuthenticated = isAuthenticated,
+            isSyncingLocation = isSyncingDeviceLocation,
+            onRefreshCurrentGps = { viewModel.syncInitialDeviceLocation(context, forceRefresh = true) },
             onNavigateToEditProfile = { navigateTo(MechanicScreen.EDIT_PROFILE) },
             onNavigateToVerification = { navigateTo(MechanicScreen.VERIFICATION) },
             onNavigateToVehicles = { navigateTo(MechanicScreen.VEHICLES_SERVICES) },
             onNavigateToRadius = { navigateTo(MechanicScreen.SERVICE_RADIUS) },
             onSignOut = {
-              viewModel.signOut()
-              popTo(MechanicScreen.LOGIN)
+              com.example.ui.auth.signOutGoogle(
+                context = context,
+                credentialManager = credentialManager,
+                onSignOutComplete = {
+                  viewModel.signOut()
+                  popTo(MechanicScreen.LOGIN)
+                },
+                scope = coroutineScope
+              )
             },
             onNavigateBack = { navigateBack() }
           )

@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <resources>
-    <string name="firestore_database_id" translatable="false">(default)</string>
+    <string name="firestore_database_id" translatable="false">ai-studio-android-e98a79eb-e2fe-4b16-a049-c442e6f88e9e</string>
 </resources>

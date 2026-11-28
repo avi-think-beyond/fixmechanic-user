@@ -2,8 +2,11 @@ package com.example.ui.screens
 
 import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,6 +59,10 @@ fun DashboardScreen(
   onSimulateJobOffer: (Int) -> Unit,
   onDismissBanner: () -> Unit,
   onSyncLocation: (Context) -> Unit = {},
+  availableOffers: List<JobOffer> = emptyList(),
+  isAcceptingOffer: Boolean = false,
+  onAcceptOffer: (String) -> Unit = {},
+  onRejectOffer: (String) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -70,8 +77,26 @@ fun DashboardScreen(
     onCheckPermissions(context)
   }
 
+  val notificationPermissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()
+  ) { /* handled gracefully; in-app popup & live dashboard list always remain active */ }
+
+  var requestedNotificationPermission by remember { mutableStateOf(false) }
+
   LaunchedEffect(Unit) {
     onCheckPermissions(context)
+  }
+  LaunchedEffect(profile.isOnline) {
+    if (profile.isOnline && !requestedNotificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      val granted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.POST_NOTIFICATIONS
+      ) == PackageManager.PERMISSION_GRANTED
+      if (!granted) {
+        requestedNotificationPermission = true
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+      }
+    }
   }
   LaunchedEffect(profile.isOnline, isLocationPermissionGranted) {
     if (profile.isOnline && isLocationPermissionGranted) {
@@ -401,14 +426,120 @@ fun DashboardScreen(
             }
           }
         } else if (profile.isOnline && activeJob == null) {
-          RadarScanningCard(
-            radiusKm = profile.serviceRadiusKm,
-            baseCity = profile.baseCityLocality,
-            capability = profile.vehicleCapability,
-            onSimulate0 = { onSimulateJobOffer(0) },
-            onSimulate1 = { onSimulateJobOffer(1) },
-            onSimulate2 = { onSimulateJobOffer(2) }
-          )
+          Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (availableOffers.isNotEmpty()) {
+              Surface(
+                color = EmergencyRedSoft,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, EmergencyRed),
+                modifier = Modifier.fillMaxWidth().testTag("live_incoming_requests_section")
+              ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                      Icon(
+                        imageVector = Icons.Filled.NotificationsActive,
+                        contentDescription = null,
+                        tint = EmergencyRed,
+                        modifier = Modifier.size(20.dp)
+                      )
+                      Spacer(modifier = Modifier.width(6.dp))
+                      Text(
+                        text = "LIVE NEARBY REQUESTS (${availableOffers.size})",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                          fontWeight = FontWeight.Black,
+                          color = EmergencyRedDark,
+                          letterSpacing = 0.8.sp
+                        )
+                      )
+                    }
+                    StatusBadge(
+                      text = "LIVE",
+                      color = SurfaceWhite,
+                      backgroundColor = EmergencyRed
+                    )
+                  }
+
+                  availableOffers.forEach { offer ->
+                    Surface(
+                      color = SurfaceWhite,
+                      shape = RoundedCornerShape(10.dp),
+                      border = androidx.compose.foundation.BorderStroke(1.dp, BorderLight),
+                      modifier = Modifier.fillMaxWidth().testTag("incoming_offer_card_${offer.id}")
+                    ) {
+                      Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.SpaceBetween,
+                          verticalAlignment = Alignment.CenterVertically
+                        ) {
+                          Text(
+                            text = "${offer.problemCategory.label} • ${offer.vehicleModel}",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                              fontWeight = FontWeight.Bold,
+                              color = Navy900
+                            ),
+                            modifier = Modifier.weight(1f)
+                          )
+                          Text(
+                            text = "${offer.approxDistanceKm} km",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                              fontWeight = FontWeight.ExtraBold,
+                              color = EmergencyRed
+                            )
+                          )
+                        }
+                        Text(
+                          text = offer.locality,
+                          style = MaterialTheme.typography.bodySmall.copy(color = Navy700)
+                        )
+                        Text(
+                          text = "Est. ₹${"%.0f".format(offer.estimatedPayoutMinInr)} – ₹${"%.0f".format(offer.estimatedPayoutMaxInr)}",
+                          style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = OnlineGreenDark
+                          )
+                        )
+                        Row(
+                          modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                          horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                          OutlinedButton(
+                            onClick = { onRejectOffer(offer.id) },
+                            enabled = !isAcceptingOffer,
+                            modifier = Modifier.weight(1f).testTag("dashboard_decline_offer_${offer.id}")
+                          ) {
+                            Text("Decline", color = Navy700, fontWeight = FontWeight.Bold)
+                          }
+                          Button(
+                            onClick = { onAcceptOffer(offer.id) },
+                            enabled = !isAcceptingOffer,
+                            colors = ButtonDefaults.buttonColors(containerColor = OnlineGreenDark),
+                            modifier = Modifier.weight(1.4f).testTag("dashboard_accept_offer_${offer.id}")
+                          ) {
+                            Text("Accept Job", fontWeight = FontWeight.Bold)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            RadarScanningCard(
+              radiusKm = profile.serviceRadiusKm,
+              baseCity = profile.baseCityLocality,
+              capability = profile.vehicleCapability,
+              onSimulate0 = { onSimulateJobOffer(0) },
+              onSimulate1 = { onSimulateJobOffer(1) },
+              onSimulate2 = { onSimulateJobOffer(2) }
+            )
+          }
         } else if (!profile.isOnline && activeJob == null) {
           Surface(
             color = SurfaceVariantSlate,

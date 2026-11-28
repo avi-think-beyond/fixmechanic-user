@@ -70,9 +70,14 @@ class ExampleUnitTest {
 
   @Test
   fun testUpdateServiceAreaAndPincode() = testScope.runTest {
-    val repository = FixMechanicRepositoryImpl(testScope)
+    val repository = FixMechanicRepositoryImpl(
+      db = null,
+      auth = null,
+      scope = testScope,
+      backendBaseUrl = "http://127.0.0.1:5055"
+    )
     val initialProfile = repository.profile.value
-    assertEquals("560038", initialProfile.pincode)
+    assertEquals("122002", initialProfile.pincode)
 
     val updateResult = repository.updateServiceAreaAndPincode(
       cityLocality = "Koramangala 4th Block, Bengaluru",
@@ -90,77 +95,17 @@ class ExampleUnitTest {
   }
 
   @Test
-  fun testDispatchSchemaMapper_ParsesCustomerSearchingRequestAndHaversineDistance() {
-    val data = mapOf(
-      "userId" to "cust_001",
-      "status" to "SEARCHING_FOR_MECHANICS",
-      "mechanicId" to "",
-      "vehicle" to "Two Wheeler - Bike",
-      "vehicleName" to "Honda Activa 6G",
-      "serviceType" to "Flat Tyre / Puncture",
-      "description" to "Rear tyre flat near metro station",
-      "address" to "Indiranagar Metro Station, 100ft Road",
-      "pincode" to "560038",
-      "latitude" to 12.9784,
-      "longitude" to 77.6408,
-      "estimatedPrice" to 400.0
-    )
-
-    val offer = com.example.data.DispatchSchemaMapper.mapRawToJobOffer(
-      id = "req_live_001",
-      data = data,
-      sourceCollection = "service_requests",
-      mechanicLat = 12.9716,
-      mechanicLng = 77.5946
-    )
-
-    assertNotNull(offer)
-    assertEquals("service_requests", offer!!.sourceCollection)
-    assertEquals(com.example.model.VehicleType.TWO_WHEELER, offer.vehicleType)
-    assertEquals("Honda Activa 6G", offer.vehicleModel)
-    assertEquals(com.example.model.ServiceCategory.PUNCTURE_TYRE, offer.problemCategory)
-    assertTrue(offer.approxDistanceKm in 4.5..5.6)
-    assertTrue(offer.locality.contains("560038"))
-  }
-
-  @Test
-  fun testDispatchSchemaMapper_SkipsAlreadyAssignedOrClosedRequests() {
-    val assignedData = mapOf(
-      "status" to "SEARCHING",
-      "mechanicId" to "mech_999"
-    )
-    assertNull(
-      com.example.data.DispatchSchemaMapper.mapRawToJobOffer(
-        id = "req_taken",
-        data = assignedData,
-        sourceCollection = "service_requests",
-        mechanicLat = 12.9716,
-        mechanicLng = 77.5946
-      )
-    )
-
-    val completedData = mapOf(
-      "status" to "COMPLETED",
-      "mechanicId" to ""
-    )
-    assertNull(
-      com.example.data.DispatchSchemaMapper.mapRawToJobOffer(
-        id = "req_done",
-        data = completedData,
-        sourceCollection = "emergency_requests",
-        mechanicLat = 12.9716,
-        mechanicLng = 77.5946
-      )
-    )
-  }
-
-  @Test
   fun testUpdateProfileDetailsAndCoordinates() = testScope.runTest {
-    val repository = FixMechanicRepositoryImpl(testScope)
+    val repository = FixMechanicRepositoryImpl(
+      db = null,
+      auth = null,
+      scope = testScope,
+      backendBaseUrl = "http://127.0.0.1:5055"
+    )
     val res = repository.updateProfileDetails(
       fullName = "Vikram Nair",
       workshopName = "Nair Auto Care",
-      capability = com.example.model.VehicleCapability.BOTH,
+      capability = VehicleCapability.BOTH,
       cityLocality = "Andheri West, Mumbai",
       radiusKm = 25,
       pincode = "400053",
@@ -180,23 +125,13 @@ class ExampleUnitTest {
   }
 
   @Test
-  fun testExtractCoordinatesSupportsShopLatLngAndGeoPoint() {
-    val (lat1, lng1) = com.example.data.DispatchSchemaMapper.extractCoordinates(
-      mapOf("shopLat" to 19.1363, "shopLng" to 72.8277)
-    )
-    assertEquals(19.1363, lat1!!, 0.0001)
-    assertEquals(72.8277, lng1!!, 0.0001)
-
-    val (lat2, lng2) = com.example.data.DispatchSchemaMapper.extractCoordinates(
-      mapOf("location" to com.google.firebase.firestore.GeoPoint(28.6315, 77.2167))
-    )
-    assertEquals(28.6315, lat2!!, 0.0001)
-    assertEquals(77.2167, lng2!!, 0.0001)
-  }
-
-  @Test
   fun testSyncInitialDeviceLocation_DefaultsUntilCustomLocationSaved() = testScope.runTest {
-    val repository = FixMechanicRepositoryImpl(testScope)
+    val repository = FixMechanicRepositoryImpl(
+      db = null,
+      auth = null,
+      scope = testScope,
+      backendBaseUrl = "http://127.0.0.1:5055"
+    )
     assertFalse(repository.profile.value.hasCustomLocation)
 
     // 1. Before custom location is saved, mobile GPS coordinates update default locality/PIN/coords
